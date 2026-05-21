@@ -129,8 +129,6 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
     input_params = {
         "prompt": realistic_prompt,
         "aspect_ratio": aspect_ratio,
-        "output_format": "jpeg",
-        "safety_tolerance": 3,
     }
 
     if reference_urls:
@@ -246,9 +244,6 @@ def generate_image_with_reference(
     input_params: dict = {
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
-        "size": "2K",
-        "sequential_image_generation": "disabled",
-        "disable_safety_checker": False,
     }
 
     if image_url:
@@ -374,10 +369,7 @@ def generate_product_post(
     input_params: dict = {
         "prompt": full_prompt,
         "aspect_ratio": aspect_ratio,
-        "size": "2K",
         "image_input": [clean_product_url],
-        "sequential_image_generation": "disabled",
-        "disable_safety_checker": False,
     }
 
     for attempt in range(_CREATE_RETRIES):
