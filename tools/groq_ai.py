@@ -176,36 +176,38 @@ def generate_caption(description: str, content_type: str, website_url: str = "")
 
 def generate_product_poster_prompt(description: str, brand: dict) -> str:
     """
-    Generate a single vivid Replicate/Stable-Diffusion style prompt for a product
-    poster where the product image is the hero. The prompt instructs the model to
-    keep the exact product as the centrepiece and surround it with dramatic,
-    professional marketing imagery.
+    Generate a SeedDream img2img environment/lighting prompt for a product post.
+    The product itself is locked by a hard prefix in image_gen.generate_product_post —
+    this prompt ONLY describes the environment, lighting, and mood around the product.
+    Strict rules prevent hallucination of new product details.
     """
-    brand_ctx = (
-        f"Brand: {brand.get('brand_name') or 'the brand'}\n"
-        f"Tone/voice: {brand.get('brand_voice') or 'bold and premium'}\n"
-        f"Brand colors: {brand.get('brand_colors') or 'derive from context'}\n"
-    )
+    brand_name   = brand.get("brand_name") or "the brand"
+    brand_colors = brand.get("brand_colors") or "neutral professional tones"
+    brand_voice  = brand.get("brand_voice") or "premium and clean"
+
     system = (
-        "You are an expert AI image prompt engineer specialising in commercial product photography. "
-        "The user's product image will be passed directly to the AI model — your job is to write "
-        "a single prompt that tells the model HOW to transform it into a stunning marketing poster. "
-        "Rules:\n"
-        "- Keep the product as the clear hero and centrepiece of the composition\n"
-        "- Describe a clean, professional studio or lifestyle environment around the product\n"
-        "- Specify soft studio lighting with warm accent highlights and a subtle shadow\n"
-        "- Include a blurred, elegant background for depth\n"
-        "- Make it feel like a polished, high-end commercial advertisement\n"
-        "- End with: photorealistic, sharp focus, professional product photography, 8K\n"
-        "- Keep language clean and professional — no violent, adult, or provocative imagery\n"
-        "Output ONLY the prompt, one concise paragraph, no headers or numbering."
+        "You are an expert commercial photography art director. "
+        "The product image is FIXED — it will be injected into the scene as-is. "
+        "Your ONLY job is to describe the ENVIRONMENT and LIGHTING around the product. "
+        "\n\nSTRICT RULES — follow every one:\n"
+        "1. NEVER describe the product itself — no colors, shapes, labels, packaging.\n"
+        "2. NEVER invent or mention any text, logos, or brand marks in the scene.\n"
+        "3. ONLY describe: surface the product sits on, background, lighting setup, atmosphere, mood.\n"
+        "4. Lighting must be: professional studio or natural lifestyle — soft, directional, with subtle shadows.\n"
+        "5. Background must be: clean, uncluttered, blurred bokeh or elegant gradient.\n"
+        "6. The scene must feel like a premium commercial photo shoot.\n"
+        "7. Square 1:1 composition — leave breathing room around the product.\n"
+        "8. End every prompt with: photorealistic, sharp product focus, 8K, commercial photography quality.\n"
+        "9. Output ONLY the environment/lighting prompt — one concise paragraph, no headers."
     )
     user = (
-        f"{brand_ctx}\n"
-        f"Content idea: {description}\n\n"
-        "Write the image generation prompt."
+        f"Brand: {brand_name}\n"
+        f"Brand colors to use in the environment: {brand_colors}\n"
+        f"Brand visual tone: {brand_voice}\n"
+        f"Content idea / occasion: {description}\n\n"
+        "Write the environment and lighting prompt (NOT the product — that is already in the reference image)."
     )
-    return _chat(system, user, temperature=0.78, max_tokens=300)
+    return _chat(system, user, temperature=0.65, max_tokens=280)
 
 
 def generate_poster_text(description: str, brand: dict) -> dict:

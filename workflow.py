@@ -78,6 +78,7 @@ from session_store import (
     STEP_REEL_APPROVAL,
 )
 from tools import check_user, groq_ai, image_gen, aws_storage, zerini
+from tools.beeq_voice import msg as beeq, dynamic as beeq_dyn
 from tools import video_gen as video_gen_tools
 from tools import reel_composer
 from tools import voice as voice_tools
@@ -534,9 +535,8 @@ def _verify_email_bg(phone: str, email: str) -> None:
         # Returning user on same phone — skip straight to content creation
         save_session(session)
         _send_async(phone, {"kind": "text",
-                            "text": (f"✅ Verified! Welcome back.{user_id_line}\n"
-                                     f"Connected to @{session.instagram_username}.\n\n"
-                                     "What would you like to create today? 👇\n"
+                            "text": (f"Welcome back! Connected to @{session.instagram_username}.{user_id_line}\n\n"
+                                     f"{beeq('ask_content_type')}\n"
                                      "_Tip: type *my posts* anytime to see your queue._")})
         time.sleep(0.8)
         send_content_type_menu(phone)
@@ -608,7 +608,7 @@ def _recheck_plan_bg(phone: str, previous_step: str) -> None:
     # Nudge back into the flow
     if previous_step == STEP_CHOOSE_CONTENT_TYPE:
         _send_async(phone, {"kind": "text",
-                            "text": "✅ Account verified. What would you like to create? 👇"})
+                            "text": beeq("ask_content_type")})
         time.sleep(0.5)
         send_content_type_menu(phone)
 
@@ -661,8 +661,7 @@ def _resolve_instagram_bg(phone: str, handle: str) -> None:
         session.step = STEP_CHOOSE_CONTENT_TYPE
         save_session(session)
         _send_async(phone, {"kind": "text",
-                            "text": f"✅ Found Instagram @{username}! Welcome back.\n\n"
-                                    "What would you like to create today? 👇"})
+                            "text": f"@{username} connected ✓\n\n{beeq('ask_content_type')}"})
         time.sleep(0.5)
         send_content_type_menu(phone)
 
@@ -690,23 +689,31 @@ def _generate_and_notify_bg(phone: str) -> None:
             _send_async(phone, {"kind": "text", "text": "🚀 Got it! Using your product photo as the hero 🖼️\n"
                                                          "Crafting a cinematic marketing prompt..."})
 
-            # Groq generates a dramatic commercial prompt keeping product as hero
+            # Groq generates an environment/lighting prompt — product is locked by SeedDream
             poster_prompt = groq_ai.generate_product_poster_prompt(description, brand)
 
-            est_secs = count * 90
+            est_secs = count * 100
             wait_str = ("~90 seconds" if est_secs < 120
                         else f"~{est_secs // 60}–{est_secs // 60 + 1} minutes" if est_secs < 300
                         else f"~{est_secs // 60} minutes")
 
-            session.bg_status = f"🎨 Generating {count} dramatic poster(s)... {wait_str} ☕"
+            session.bg_status = f"🎨 Generating {count} professional product post(s)... {wait_str} ☕"
             save_session(session)
             _send_async(phone, {"kind": "text", "text": session.bg_status})
 
-            # Replicate generates using product image as reference (img2img)
-            gen_result = image_gen.generate_images(
-                [poster_prompt] * count,
-                content_type=session.content_type or "image_post",
-                reference_urls=[session.reference_image_url],
+            # Detect logo: use first brand asset that isn't the product reference image
+            logo_url: str | None = None
+            for asset in (session.brand_assets or []):
+                if asset != session.reference_image_url:
+                    logo_url = asset
+                    break
+
+            # SeedDream img2img — product preserved exactly, only environment changes
+            gen_result = image_gen.generate_product_posts(
+                prompts=[poster_prompt] * count,
+                product_image_url=session.reference_image_url,
+                logo_url=logo_url,
+                aspect_ratio="1:1",
             )
             if not gen_result.get("ok"):
                 raise RuntimeError(f"Image generation failed: {gen_result.get('error')}")
@@ -714,10 +721,19 @@ def _generate_and_notify_bg(phone: str) -> None:
             session.bg_status = "☁️ Uploading to secure storage..."
             save_session(session)
             _send_async(phone, {"kind": "text", "text": session.bg_status})
-            s3_result = aws_storage.upload_urls(gen_result["urls"], user_id, media_kind="post")
-            if not s3_result.get("ok"):
-                raise RuntimeError(f"S3 upload failed: {s3_result.get('error')}")
-            s3_urls = s3_result["s3_urls"]
+
+            # Upload the composited bytes (product + logo) directly
+            s3_urls = []
+            for img_bytes in gen_result["bytes_list"]:
+                up = aws_storage.upload_bytes(
+                    img_bytes,
+                    content_type="image/jpeg",
+                    extension="jpg",
+                    folder=f"{user_id}/posts",
+                )
+                if not up.get("ok"):
+                    raise RuntimeError(f"S3 upload failed: {up.get('error')}")
+                s3_urls.append(up["s3_url"])
 
             # Stamp profile badge on every image
             session.bg_status = "🏷️ Adding brand badge..."
@@ -874,12 +890,9 @@ def _generate_and_notify_bg(phone: str) -> None:
         session.bg_status = ""
         save_session(session)
         time.sleep(0.5)
-        approval_text = (
-            f"✅ Your {len(s3_urls)} image{'s are' if len(s3_urls) > 1 else ' is'} ready!\n\n"
-            "Reply *approve* to move on to the caption.\n"
-            "Reply *regenerate* to create new ones.\n"
-            "Or describe any changes and I'll redo them."
-        )
+        n = len(s3_urls)
+        count_str = f"{n} image{'s' if n > 1 else ''}"
+        approval_text = f"Here {'they are' if n > 1 else 'it is'} — {count_str} ready.\n\n{beeq('approve_or_regen')}"
         _send_async(phone, {"kind": "text", "text": approval_text}, tts=True)
 
     except Exception as exc:
@@ -887,7 +900,7 @@ def _generate_and_notify_bg(phone: str) -> None:
         session.bg_status = ""
         save_session(session)
         _send_async(phone, {"kind": "text",
-                            "text": f"❌ Content generation failed: {exc}\n\nLet's try again."}, tts=True)
+                            "text": beeq("generation_error")}, tts=True)
         time.sleep(0.3)
         send_content_type_menu(phone)
 
@@ -992,7 +1005,11 @@ def _publish_bg(phone: str) -> None:
             )
             music_spoken = f" I suggest pairing it with {music['name']} by {music.get('artist', '')} — you can add it directly in the Instagram app."
 
-        success_text = f"🎉 Your {label} has been {action_word} to @{username}!{music_line}"
+        if session.publish_action == "schedule":
+            scheduled_friendly = _friendly_time(scheduled_dt, session.user_timezone) if "scheduled_dt" in dir() else action_word
+            success_text = f"{beeq('scheduled', time=scheduled_friendly)} (@{username}){music_line}"
+        else:
+            success_text = f"{beeq('published')} (@{username}){music_line}"
         _send_async(phone, {"kind": "text", "text": success_text})
 
         # One spoken summary for voice users
@@ -1010,12 +1027,7 @@ def _publish_bg(phone: str) -> None:
         session.bg_status = ""
         save_session(session)
         _send_async(phone, {"kind": "text",
-                            "text": (
-                                f"❌ Publishing failed: {exc}\n\n"
-                                "What would you like to do?\n\n"
-                                "Reply *retry* to try publishing again.\n"
-                                "Reply *new* to create a new post."
-                            )})
+                            "text": beeq("publish_error")})
 
 
 def _generate_initial_content_bg(phone: str) -> None:
@@ -1427,21 +1439,17 @@ def handle_incoming_message(
     if session.step == STEP_AWAITING_EMAIL:
         email = _extract_email(clean)
         if not email:
-            return {"kind": "text",
-                    "text": ("👋 Welcome to Foundabee. I'm BeeQ, your AI social media manager.\n\n"
-                             "To get started, share your Foundabee account email address.")}
+            return {"kind": "text", "text": beeq("welcome")}
         session.step = STEP_VERIFYING_EMAIL
         save_session(session)
         _start_bg(_verify_email_bg, phone, email)
-        return {"kind": "text",
-                "text": "🔍 Checking your BeeQ account — I'll message you here in a moment."}
+        return {"kind": "text", "text": beeq("verifying")}
 
     # ------------------------------------------------------------------
     # STEP: verifying_email (async in progress)
     # ------------------------------------------------------------------
     if session.step == STEP_VERIFYING_EMAIL:
-        return {"kind": "text",
-                "text": "⏳ Still verifying your account. Please wait a moment..."}
+        return {"kind": "text", "text": beeq("still_verifying")}
 
     # ------------------------------------------------------------------
     # STEP: collect_instagram — ask for and validate Instagram username
@@ -1449,8 +1457,7 @@ def handle_incoming_message(
     if session.step == STEP_COLLECT_INSTAGRAM:
         handle = clean.lstrip("@").strip()
         if len(handle) < 2:
-            return {"kind": "text",
-                    "text": "Please enter your Instagram username (e.g. @yourbrand or yourbrand):"}
+            return {"kind": "text", "text": beeq("ask_instagram")}
         session.step = "resolving_instagram"
         save_session(session)
         _start_bg(_resolve_instagram_bg, phone, handle)
@@ -1468,22 +1475,13 @@ def handle_incoming_message(
     # STEP: onboarding_brand
     if session.step == STEP_ONBOARDING_BRAND:
         if len(clean) < 3:
-            return {"kind": "text",
-                    "text": "Please tell me your brand name and what you offer. "
-                            "(e.g. \"Sunny Skincare - organic face creams\")"}
+            return {"kind": "text", "text": beeq("onboarding_start")}
         parts = clean.split(" - ", 1)
         session.brand_name = parts[0].strip()
         session.brand_description = clean
         session.step = STEP_ONBOARDING_GOAL
         save_session(session)
-        return {"kind": "text",
-                "text": (
-                    "What's the main goal for your social media?\n\n"
-                    "1. 📈 Sales & Leads\n"
-                    "2. 👥 Grow Audience\n"
-                    "3. 📣 Brand Awareness\n"
-                    "4. 🤝 All of the above"
-                )}
+        return {"kind": "text", "text": beeq("onboarding_goal")}
 
     # STEP: onboarding_goal
     if session.step == STEP_ONBOARDING_GOAL:
@@ -1496,32 +1494,16 @@ def handle_incoming_message(
         }
         goal = goal_map.get(choice)
         if not goal:
-            return {"kind": "text",
-                    "text": (
-                        "What's the main goal for your social media?\n\n"
-                        "1. 📈 Sales & Leads\n"
-                        "2. 👥 Grow Audience\n"
-                        "3. 📣 Brand Awareness\n"
-                        "4. 🤝 All of the above"
-                    )}
+            return {"kind": "text", "text": beeq("onboarding_goal")}
         session.social_goal = goal
         if goal in {"sales_leads", "all"}:
             session.step = STEP_ONBOARDING_WEBSITE
             save_session(session)
-            return {"kind": "text",
-                    "text": "What's your website or product link?\n(Type *skip* if you don't have one)"}
+            return {"kind": "text", "text": beeq("onboarding_website")}
         else:
             session.step = STEP_ONBOARDING_VOICE
             save_session(session)
-            return {"kind": "text",
-                    "text": (
-                        "How does your brand communicate?\n\n"
-                        "1. 🤗 Warm & empathetic (like Dove)\n"
-                        "2. 💪 Bold & direct (like Nike)\n"
-                        "3. 😄 Light & witty (like Wendy's)\n"
-                        "4. 👔 Formal & professional\n"
-                        "5. ✏️ Something else — type it below"
-                    )}
+            return {"kind": "text", "text": beeq("onboarding_voice")}
 
     # STEP: onboarding_website
     if session.step == STEP_ONBOARDING_WEBSITE:
@@ -1531,15 +1513,7 @@ def handle_incoming_message(
             session.website_url = clean
         session.step = STEP_ONBOARDING_VOICE
         save_session(session)
-        return {"kind": "text",
-                "text": (
-                    "How does your brand communicate?\n\n"
-                    "1. 🤗 Warm & empathetic (like Dove)\n"
-                    "2. 💪 Bold & direct (like Nike)\n"
-                    "3. 😄 Light & witty (like Wendy's)\n"
-                    "4. 👔 Formal & professional\n"
-                    "5. ✏️ Something else — type it below"
-                )}
+        return {"kind": "text", "text": beeq("onboarding_voice")}
 
     # STEP: onboarding_voice
     if session.step == STEP_ONBOARDING_VOICE:
@@ -1553,53 +1527,30 @@ def handle_incoming_message(
         if any(k in choice for k in ("5", "else", "other", "something")):
             session.step = STEP_ONBOARDING_VOICE_CUSTOM
             save_session(session)
-            return {"kind": "text",
-                    "text": "Describe your brand's communication style in your own words:"}
+            return {"kind": "text", "text": beeq("onboarding_voice_custom")}
         if voice:
             session.brand_voice = voice
             session.step = STEP_ONBOARDING_COLORS
             save_session(session)
-            return {"kind": "text",
-                    "text": (
-                        "What are your brand colors?\n"
-                        "(e.g. *navy blue and gold*, *#FF5733 and white*, or type *not sure* to skip)"
-                    )}
+            return {"kind": "text", "text": beeq("onboarding_colors")}
         # No match — resend menu
-        return {"kind": "text",
-                "text": (
-                    "How does your brand communicate?\n\n"
-                    "1. 🤗 Warm & empathetic (like Dove)\n"
-                    "2. 💪 Bold & direct (like Nike)\n"
-                    "3. 😄 Light & witty (like Wendy's)\n"
-                    "4. 👔 Formal & professional\n"
-                    "5. ✏️ Something else — type it below"
-                )}
+        return {"kind": "text", "text": beeq("onboarding_voice")}
 
     # STEP: onboarding_voice_custom
     if session.step == STEP_ONBOARDING_VOICE_CUSTOM:
         if len(clean) < 3:
-            return {"kind": "text",
-                    "text": "Describe your brand's communication style in your own words:"}
+            return {"kind": "text", "text": beeq("onboarding_voice_custom")}
         session.brand_voice = f"custom: {clean}"
         session.step = STEP_ONBOARDING_COLORS
         save_session(session)
-        return {"kind": "text",
-                "text": (
-                    "What are your brand colors?\n"
-                    "(e.g. *navy blue and gold*, *#FF5733 and white*, or type *not sure* to skip)"
-                )}
+        return {"kind": "text", "text": beeq("onboarding_colors")}
 
     # STEP: onboarding_colors
     if session.step == STEP_ONBOARDING_COLORS:
         session.brand_colors = clean if "not sure" not in clean.lower() else ""
         session.step = STEP_ONBOARDING_REFERENCE
         save_session(session)
-        return {"kind": "text",
-                "text": (
-                    "Show me content you love — your own posts or a competitor's. "
-                    "Paste an Instagram, TikTok, or Facebook link.\n"
-                    "(Type *skip* to continue)"
-                )}
+        return {"kind": "text", "text": beeq("onboarding_reference")}
 
     # STEP: onboarding_reference
     if session.step == STEP_ONBOARDING_REFERENCE:
@@ -1675,12 +1626,7 @@ def handle_incoming_message(
         # Move on to Instagram username collection
         session.step = STEP_COLLECT_INSTAGRAM
         save_session(session)
-        return {"kind": "text",
-                "text": (
-                    "Almost done! Let's connect your Instagram account. 📸\n\n"
-                    "What's your Instagram username?\n"
-                    "(e.g. @yourbrand)"
-                )}
+        return {"kind": "text", "text": beeq("ask_instagram")}
 
     # STEP: onboarding_schedule
     if session.step == STEP_ONBOARDING_SCHEDULE:
@@ -1691,22 +1637,11 @@ def handle_incoming_message(
         }
         sched = schedule_map.get(choice)
         if not sched:
-            return {"kind": "text",
-                    "text": (
-                        "When do you want posts going out?\n\n"
-                        "1. 🌅 Morning (8–10 AM)\n"
-                        "2. ☀️ Midday (12–2 PM)\n"
-                        "3. 🌆 Evening (5–8 PM)"
-                    )}
+            return {"kind": "text", "text": beeq("onboarding_schedule")}
         session.posting_schedule = sched
         session.step = STEP_ONBOARDING_REPORT_FREQ
         save_session(session)
-        return {"kind": "text",
-                "text": (
-                    "How often would you like performance reports?\n\n"
-                    "1. 📊 Biweekly\n"
-                    "2. 📅 Monthly"
-                )}
+        return {"kind": "text", "text": beeq("onboarding_report")}
 
     # STEP: onboarding_report_freq
     if session.step == STEP_ONBOARDING_REPORT_FREQ:
@@ -1717,22 +1652,11 @@ def handle_incoming_message(
         }
         freq = freq_map.get(choice)
         if not freq:
-            return {"kind": "text",
-                    "text": (
-                        "How often would you like performance reports?\n\n"
-                        "1. 📊 Biweekly\n"
-                        "2. 📅 Monthly"
-                    )}
+            return {"kind": "text", "text": beeq("onboarding_report")}
         session.report_frequency = freq
-        # Ask for timezone before finishing onboarding
         session.step = STEP_ONBOARDING_TIMEZONE
         save_session(session)
-        return {"kind": "text",
-                "text": (
-                    "📍 Last question — what city or country are you based in?\n"
-                    "This helps BeeQ show scheduling times in your local timezone.\n"
-                    "(e.g. *Mumbai*, *New York*, *London*, *Dubai*)"
-                )}
+        return {"kind": "text", "text": beeq("onboarding_timezone")}
 
     if session.step == STEP_ONBOARDING_TIMEZONE:
         tz_str = groq_ai.get_timezone_for_location(body.strip())
@@ -1747,14 +1671,9 @@ def handle_incoming_message(
             session.user_timezone = None
 
         if not session.user_timezone:
-            # Couldn't detect — ask once more with examples, then skip if still unclear
             if body.strip().lower() not in {"skip", "idk", "i don't know", "unsure"}:
                 return {"kind": "text",
-                        "text": (
-                            "⚠️ Couldn't detect a timezone from that. "
-                            "Try a city name like *Dubai*, *Toronto*, or *Sydney*.\n"
-                            "Or type *skip* to use UTC."
-                        )}
+                        "text": "Couldn't place that — try a city like *Dubai*, *Toronto*, or *Sydney*. Or type *skip* to use UTC."}
 
         session.onboarding_complete = True
         session.step = "generating_initial_content"
@@ -1811,7 +1730,7 @@ def handle_incoming_message(
             ct = "reel"
         else:
             _start_bg(send_content_type_menu, phone)
-            return {"kind": "text", "text": "Please choose: *image post*, *carousel*, or *reel*. 👆"}
+            return {"kind": "text", "text": beeq("ask_content_type")}
 
         session.content_type = ct
 
@@ -1822,18 +1741,14 @@ def handle_incoming_message(
             # If description already extracted by voice, skip straight to generation
             if session.description:
                 return _handle_description_ready(session, phone, clean, media_urls)
-            return {"kind": "text",
-                    "text": "📸 Great! Describe your image post.\n\n"
-                            "What's the subject, mood, or message? The more detail, the better!"}
+            return {"kind": "text", "text": beeq("ask_description")}
 
         if ct == "carousel":
             session.step = STEP_COLLECT_DESCRIPTION
             save_session(session)
             if session.description:
                 return _handle_description_ready(session, phone, clean, media_urls)
-            return {"kind": "text",
-                    "text": "🎠 Carousel it is! What is this carousel about?\n\n"
-                            "Describe the topic, theme, or message:"}
+            return {"kind": "text", "text": beeq("ask_description")}
 
         if ct == "reel":
             session.step = STEP_REEL_TYPE_SELECT
@@ -1949,7 +1864,7 @@ def handle_incoming_message(
         return {
             "kind": "text",
             "text": (
-                "✍️ Briefly describe your product (name, what it does, who it's for):\n\n"
+                beeq("ask_description") + "\n\n"
                 "This helps me craft the perfect cinematic visuals."
             ),
         }
@@ -1959,7 +1874,7 @@ def handle_incoming_message(
     # ------------------------------------------------------------------
     if session.step == STEP_REEL_DESCRIBE_PRODUCT:
         if len(clean) < 3:
-            return {"kind": "text", "text": "Please describe your product briefly so I can get started! 🎬"}
+            return {"kind": "text", "text": beeq("ask_description")}
 
         session.reel_product_description = clean
         save_session(session)
@@ -1984,7 +1899,7 @@ def handle_incoming_message(
         session.reel_product_description = clean
         brand = session.brand_profile() if session.onboarding_complete else {}
 
-        _send_async(phone, {"kind": "text", "text": "✍️ Writing your UGC script..."})
+        _send_async(phone, {"kind": "text", "text": "✍️ " + beeq("generating")})
         script = groq_ai.generate_ugc_script(clean, brand)
         session.reel_script = script
         session.step = STEP_REEL_UGC_SCRIPT_REVIEW
@@ -2288,7 +2203,7 @@ def handle_incoming_message(
         session.reel_product_description = clean
         brand = session.brand_profile() if session.onboarding_complete else {}
 
-        _send_async(phone, {"kind": "text", "text": "✍️ Writing your ad script..."})
+        _send_async(phone, {"kind": "text", "text": "✍️ " + beeq("generating")})
         script = groq_ai.generate_ugc_script(clean, brand)
         session.reel_script = script
         session.step = STEP_REEL_AD_SCRIPT_REVIEW
@@ -2384,7 +2299,7 @@ def handle_incoming_message(
             _start_bg(send_caption_choice_menu, phone)
             return {
                 "kind": "text",
-                "text": "✅ Reel approved! Now let's add a caption.",
+                "text": "✅ Reel locked in — " + beeq("ask_caption"),
             }
 
         if _rin(regen_words):
@@ -2395,10 +2310,7 @@ def handle_incoming_message(
                 save_session(session)
                 return {
                     "kind": "text",
-                    "text": (
-                        "🔄 No problem! Send a new product photo (or *skip*) "
-                        "and I'll create a fresh reel."
-                    ),
+                    "text": "🔄 " + beeq("ask_product_image"),
                 }
             else:
                 session.step = STEP_REEL_UGC_DESCRIBE
@@ -2407,15 +2319,12 @@ def handle_incoming_message(
                 save_session(session)
                 return {
                     "kind": "text",
-                    "text": "🔄 Let's start fresh! Describe the product/service again:",
+                    "text": "🔄 " + beeq("ask_description"),
                 }
 
         return {
             "kind": "text",
-            "text": (
-                "Reply *approve* to add a caption and publish this reel,\n"
-                "or *regenerate* to create a new one."
-            ),
+            "text": beeq("approve_or_regen"),
         }
 
     # ------------------------------------------------------------------
@@ -2430,7 +2339,7 @@ def handle_incoming_message(
 
         if not has_media and len(clean) < 5:
             return {"kind": "text",
-                    "text": "Please describe your content in a few more words so I can create something great! ✨"}
+                    "text": beeq("ask_description")}
 
         session.description = clean
         return _handle_description_ready(session, phone, clean, media_urls)
@@ -2452,12 +2361,10 @@ def handle_incoming_message(
                 session.reference_image_url = upload["s3_url"]
             else:
                 return {"kind": "text",
-                        "text": f"⚠️ Couldn't upload that image ({upload.get('error')}). "
-                                "Try again or type *skip* to generate without it."}
+                        "text": beeq("upload_error")}
             save_session(session)
         elif choice not in skip_words:
-            return {"kind": "text",
-                    "text": "Send your product photo, or type *skip* to generate from scratch:"}
+            return {"kind": "text", "text": beeq("ask_product_image")}
 
         return _start_generation(session, phone)
 
@@ -2519,8 +2426,7 @@ def handle_incoming_message(
             save_session(session)
             time.sleep(0.3)
             _send_async(phone, {"kind": "text",
-                                "text": "How would you like your caption?\n\n"
-                                        "Reply *AI* to generate one automatically, or *custom* to write your own."
+                                "text": beeq("ask_caption")
                                }, tts=True)
             return {"kind": "none"}
 
@@ -2528,7 +2434,7 @@ def handle_incoming_message(
             session.step = STEP_GENERATING
             session.generated_image_urls = []
             save_session(session)
-            _send_async(phone, {"kind": "text", "text": "🔄 Regenerating your images now..."})
+            _send_async(phone, {"kind": "text", "text": "🔄 " + beeq("generating")})
             _start_bg(_generate_and_notify_bg, phone)
             return {"kind": "none"}
 
@@ -2537,7 +2443,7 @@ def handle_incoming_message(
             session.description = clean
         session.generated_image_urls = []
         save_session(session)
-        _send_async(phone, {"kind": "text", "text": "🔄 Got it — making those changes now..."})
+        _send_async(phone, {"kind": "text", "text": "🔄 Got it — " + beeq("generating")})
         # Use _start_generation so carousels go through slide-count confirmation
         return _start_generation(session, phone)
 
@@ -2562,21 +2468,21 @@ def handle_incoming_message(
         if _cap_in(custom_words):
             session.step = STEP_AWAITING_CUSTOM_CAPTION
             save_session(session)
-            return _voice_reply(phone, "Go ahead — type or say your caption. Include any hashtags you like.")
+            return _voice_reply(phone, beeq("ask_custom_caption"))
 
-        return _voice_reply(phone, "Would you like me to generate an AI caption, or would you prefer to write your own?")
+        return _voice_reply(phone, beeq("ask_caption"))
 
     # ------------------------------------------------------------------
     # STEP: awaiting_custom_caption
     # ------------------------------------------------------------------
     if session.step == STEP_AWAITING_CUSTOM_CAPTION:
         if len(clean) < 3:
-            return {"kind": "text", "text": "Please type your caption (at least a few words):"}
+            return {"kind": "text", "text": beeq("ask_custom_caption")}
         session.caption = clean
         session.step = STEP_CHOOSE_PUBLISH_ACTION
         save_session(session)
         _start_bg(send_publish_action_menu, phone, clean)
-        return _voice_reply(phone, "Caption saved. Would you like to publish right now, or schedule it for a specific time?")
+        return _voice_reply(phone, beeq("ask_publish"))
 
     # ------------------------------------------------------------------
     # STEP: choose_publish_action
@@ -2595,18 +2501,16 @@ def handle_incoming_message(
             session.step = STEP_PUBLISHING
             save_session(session)
             _start_bg(_publish_bg, phone)
-            return {"kind": "text", "text": "📤 Publishing to Instagram now — I'll confirm when it's live!"}
+            return {"kind": "text", "text": "📤 " + beeq("publishing")}
 
         if _pub_in(schedule_words):
             session.publish_action = "schedule"
             session.step = STEP_AWAITING_SCHEDULE_TIME
             save_session(session)
-            tz_hint = f"Your timezone is {session.user_timezone}. " if session.user_timezone else ""
-            return _voice_reply(phone,
-                f"When would you like to schedule this post? {tz_hint}"
-                "Say or type a date and time, for example: tomorrow at 3pm, or June 20 at 10am.")
+            tz_hint = f" (your timezone: {session.user_timezone})" if session.user_timezone else ""
+            return _voice_reply(phone, beeq("ask_schedule_time") + tz_hint)
 
-        return _voice_reply(phone, "Would you like to publish this post right now, or schedule it for a specific time?")
+        return _voice_reply(phone, beeq("ask_publish"))
 
     # ------------------------------------------------------------------
     # STEP: awaiting_schedule_time
@@ -2614,10 +2518,9 @@ def handle_incoming_message(
     if session.step == STEP_AWAITING_SCHEDULE_TIME:
         parsed_dt = _parse_user_time(clean, session.user_timezone)
         if not parsed_dt:
-            tz_hint = f"(times are in {session.user_timezone})" if session.user_timezone else "(times in UTC)"
+            tz_hint = f" (times in {session.user_timezone})" if session.user_timezone else " (times in UTC)"
             return {"kind": "text",
-                    "text": f"❓ I couldn't parse that date/time {tz_hint}. Try something like:\n"
-                            "*June 20 at 3pm* or *2025-06-20 15:00*"}
+                    "text": beeq("ask_schedule_time") + tz_hint}
 
         session.scheduled_at = parsed_dt.isoformat()
         session.step = STEP_PUBLISHING
@@ -2625,7 +2528,7 @@ def handle_incoming_message(
         _start_bg(_publish_bg, phone)
         friendly = _friendly_time(parsed_dt, session.user_timezone)
         return {"kind": "text",
-                "text": f"⏰ Got it! Scheduling your post for {friendly}..."}
+                "text": beeq("scheduled", time=friendly)}
 
     # ------------------------------------------------------------------
     # STEP: initial content review — user sees each piece one by one
@@ -2650,7 +2553,7 @@ def handle_incoming_message(
 
         if _icr_in(publish_words):
             item = queue[idx]
-            _send_async(phone, {"kind": "text", "text": "Publishing now..."})
+            _send_async(phone, {"kind": "text", "text": beeq("publishing")})
             try:
                 item_music = groq_ai.suggest_music(
                     description=item["caption"],
@@ -2675,12 +2578,12 @@ def handle_incoming_message(
                         if item_music and item_music.get("name") else ""
                     )
                     _send_async(phone, {"kind": "text",
-                                        "text": f"✅ Published to @{session.instagram_username}!{music_line}"}, tts=True)
+                                        "text": f"{beeq('published')} (@{session.instagram_username}){music_line}"}, tts=True)
                 else:
                     _send_async(phone, {"kind": "text",
-                                        "text": f"⚠️ Publish failed: {result.get('error')}"}, tts=True)
+                                        "text": beeq("publish_error")}, tts=True)
             except Exception as exc:
-                _send_async(phone, {"kind": "text", "text": f"⚠️ Publish error: {exc}"}, tts=True)
+                _send_async(phone, {"kind": "text", "text": beeq("publish_error")}, tts=True)
             time.sleep(0.5)
             session.initial_content_index = idx + 1
             save_session(session)
@@ -2690,12 +2593,10 @@ def handle_incoming_message(
         if _icr_in(sched_words):
             session.step = STEP_INITIAL_CONTENT_SCHEDULE
             save_session(session)
-            tz_hint = f"Your timezone is {session.user_timezone}. " if session.user_timezone else ""
-            return _voice_reply(phone,
-                f"When would you like to schedule this post? {tz_hint}"
-                "Say a date and time, for example: tomorrow at 9am, or June 25 at 6pm.")
+            tz_hint = f" (your timezone: {session.user_timezone})" if session.user_timezone else ""
+            return _voice_reply(phone, beeq("ask_schedule_time") + tz_hint)
 
-        return _voice_reply(phone, "Say approve to publish now, schedule to pick a time, or skip to move to the next post.")
+        return _voice_reply(phone, "Say *approve* to post now, *schedule* to pick a time, or *skip* for the next one.")
 
     # ------------------------------------------------------------------
     # STEP: initial content schedule — user provides date/time
@@ -2707,14 +2608,11 @@ def handle_incoming_message(
 
         parsed_dt = _parse_user_time(body, session.user_timezone)
         if not parsed_dt or not item:
-            tz_hint = f"(times in {session.user_timezone})" if session.user_timezone else "(times in UTC)"
+            tz_hint = f" (times in {session.user_timezone})" if session.user_timezone else ""
             return {"kind": "text",
-                    "text": (
-                        f"⚠️ Couldn't read that time {tz_hint}. Try something like:\n"
-                        "*tomorrow at 9am*, *June 25 at 6pm*, or *2025-06-25 18:00*"
-                    )}
+                    "text": beeq("ask_schedule_time") + tz_hint}
 
-        _send_async(phone, {"kind": "text", "text": "🎵 Picking a music suggestion and scheduling..."})
+        _send_async(phone, {"kind": "text", "text": "🎵 Finding a music match and scheduling..."})
         try:
             sched_music = groq_ai.suggest_music(
                 description=item["caption"],
@@ -2741,12 +2639,12 @@ def handle_incoming_message(
                     if sched_music and sched_music.get("name") else ""
                 )
                 _send_async(phone, {"kind": "text",
-                                    "text": f"✅ Scheduled for {friendly} on @{session.instagram_username}!{music_line}"})
+                                    "text": f"{beeq('scheduled', time=friendly)} (@{session.instagram_username}){music_line}"})
             else:
                 _send_async(phone, {"kind": "text",
-                                    "text": f"⚠️ Scheduling failed: {result.get('error')}"})
+                                    "text": beeq("publish_error")})
         except Exception as exc:
-            _send_async(phone, {"kind": "text", "text": f"⚠️ Scheduling error: {exc}"})
+            _send_async(phone, {"kind": "text", "text": beeq("publish_error")})
 
         time.sleep(0.5)
         session.step = STEP_INITIAL_CONTENT_REVIEW
@@ -2760,7 +2658,7 @@ def handle_incoming_message(
     # ------------------------------------------------------------------
     if session.step == STEP_PUBLISHING:
         return {"kind": "text",
-                "text": "📤 Your post is being published... I'll send you a confirmation shortly."}
+                "text": "📤 " + beeq("publishing")}
 
     # ------------------------------------------------------------------
     # STEP: publish failed — let user choose retry or new post
@@ -2771,24 +2669,20 @@ def handle_incoming_message(
             session.step = STEP_PUBLISHING
             save_session(session)
             _start_bg(_publish_bg, phone)
-            return {"kind": "text", "text": "🔄 Retrying publish — hang tight..."}
+            return {"kind": "text", "text": "🔄 " + beeq("publishing")}
         if choice in {"new", "new post", "create", "create new", "start over", "2"}:
             session.step = STEP_CHOOSE_CONTENT_TYPE
             save_session(session)
             send_content_type_menu(phone)
             return {"kind": "none"}
         # Unrecognised — re-prompt
-        return {"kind": "text",
-                "text": (
-                    "Reply *retry* to try publishing again, "
-                    "or *new* to create a fresh post."
-                )}
+        return {"kind": "text", "text": beeq("publish_error")}
 
     # Fallback — shouldn't normally be reached
     session.step = STEP_AWAITING_EMAIL
     save_session(session)
     return {"kind": "text",
-            "text": "Something went wrong. Let's start over — please share your BeeQ email."}
+            "text": beeq("welcome")}
 
 
 # ---------------------------------------------------------------------------
@@ -2809,12 +2703,12 @@ def _generate_caption_and_ask_publish_bg(phone: str) -> None:
         # One TTS audio summarising the caption and asking how to publish
         _send_async(phone, {
             "kind": "text",
-            "text": f"Your caption is ready. Would you like to publish now or schedule it for a specific time?"
+            "text": beeq("ask_publish")
         }, tts=True)
     except Exception as exc:
         session.step = STEP_CHOOSE_CAPTION
         save_session(session)
         _send_async(phone, {"kind": "text",
-                            "text": f"❌ Caption generation failed: {exc}\n\nPlease try again."}, tts=True)
+                            "text": beeq("generation_error")}, tts=True)
         time.sleep(0.3)
         send_caption_choice_menu(phone)

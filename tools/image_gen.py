@@ -310,3 +310,178 @@ def generate_images(
         if i < len(prompts) - 1:
             time.sleep(2)
     return {"ok": True, "urls": urls}
+
+
+# ---------------------------------------------------------------------------
+# SeedDream product post generation (strict product preservation)
+# ---------------------------------------------------------------------------
+
+def generate_product_post(
+    prompt: str,
+    product_image_url: str,
+    aspect_ratio: str = "1:1",
+) -> dict:
+    """
+    Generate a professional product post using SeedDream 4.5.
+    The product from product_image_url is kept 100% identical —
+    only the environment, lighting, and background change.
+    Returns {"ok": True, "url": "...", "bytes": b"..."} or {"ok": False, "error": "..."}.
+    """
+    if not config.REPLICATE_API_TOKEN:
+        return {"ok": False, "error": "REPLICATE_API_TOKEN not set."}
+
+    # SeedDream 1:1 is valid; remap any stray values
+    valid_ratios = {"1:1", "3:2", "2:3"}
+    if aspect_ratio not in valid_ratios:
+        aspect_ratio = "1:1"
+
+    # Hard prefix that locks the product — prepended to every caller prompt
+    lock_prefix = (
+        "CRITICAL: The product in the reference image must appear IDENTICALLY in the output. "
+        "Do NOT change its shape, color, packaging design, label text, logo, branding marks, "
+        "materials, or proportions in ANY way. Treat the product as a locked element. "
+        "ONLY change: the background environment, surface it rests on, ambient lighting, "
+        "and atmospheric effects around it. "
+        "The product must be the clear hero, sharply in focus, centered or prominently placed. "
+    )
+    full_prompt = lock_prefix + prompt
+
+    input_params: dict = {
+        "prompt": full_prompt,
+        "aspect_ratio": aspect_ratio,
+        "size": "2K",
+        "image_input": [product_image_url],
+        "sequential_image_generation": "disabled",
+        "disable_safety_checker": False,
+    }
+
+    for attempt in range(_CREATE_RETRIES):
+        try:
+            prediction = replicate.predictions.create(
+                model=_SEEDREAM_MODEL,
+                input=input_params,
+            )
+            break
+        except Exception as exc:
+            if not _is_retryable(exc) or attempt == _CREATE_RETRIES - 1:
+                return {"ok": False, "error": f"Could not start prediction: {exc}"}
+            time.sleep(_RETRY_BACKOFF[attempt])
+    else:
+        return {"ok": False, "error": "Prediction creation failed"}
+
+    import requests as _req
+    elapsed = 0
+    while elapsed < _MAX_WAIT:
+        try:
+            prediction.reload()
+        except Exception:
+            time.sleep(_POLL_INTERVAL)
+            elapsed += _POLL_INTERVAL
+            continue
+
+        if prediction.status == "succeeded":
+            output = prediction.output
+            url = None
+            if isinstance(output, list) and output:
+                raw = output[0]
+                url = raw.url if hasattr(raw, "url") else str(raw)
+            elif isinstance(output, str):
+                url = output
+            elif hasattr(output, "url"):
+                url = output.url
+            if url:
+                try:
+                    img_bytes = _req.get(url, timeout=60).content
+                except Exception as exc:
+                    return {"ok": False, "error": f"Failed to download result: {exc}"}
+                return {"ok": True, "url": url, "bytes": img_bytes}
+            return {"ok": False, "error": f"Unexpected output: {output!r}"}
+
+        if prediction.status in ("failed", "canceled"):
+            return {"ok": False, "error": prediction.error or prediction.status}
+
+        time.sleep(_POLL_INTERVAL)
+        elapsed += _POLL_INTERVAL
+
+    try:
+        prediction.cancel()
+    except Exception:
+        pass
+    return {"ok": False, "error": f"Timed out after {_MAX_WAIT}s"}
+
+
+def overlay_logo(
+    image_bytes: bytes,
+    logo_url: str,
+    position: str = "bottom_right",
+    size_pct: float = 0.18,
+    padding_pct: float = 0.03,
+) -> bytes:
+    """
+    Overlay the brand logo onto the generated image.
+    size_pct   — logo width as fraction of image width (default 18%)
+    padding_pct — margin from edges as fraction of image width (default 3%)
+    Returns composited JPEG bytes.
+    """
+    import io as _io
+    import requests as _req
+    from PIL import Image
+
+    try:
+        base = Image.open(_io.BytesIO(image_bytes)).convert("RGBA")
+        logo_data = _req.get(logo_url, timeout=30).content
+        logo = Image.open(_io.BytesIO(logo_data)).convert("RGBA")
+
+        bw, bh = base.size
+        logo_w = int(bw * size_pct)
+        ratio = logo_w / logo.width
+        logo_h = int(logo.height * ratio)
+        logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
+
+        pad = int(bw * padding_pct)
+        positions = {
+            "bottom_right": (bw - logo_w - pad, bh - logo_h - pad),
+            "bottom_left":  (pad, bh - logo_h - pad),
+            "top_right":    (bw - logo_w - pad, pad),
+            "top_left":     (pad, pad),
+        }
+        x, y = positions.get(position, positions["bottom_right"])
+
+        # Semi-transparent backing so logo is always readable
+        backing = Image.new("RGBA", (logo_w + pad, logo_h + pad), (255, 255, 255, 140))
+        base.paste(backing, (x - pad // 2, y - pad // 2), backing)
+        base.paste(logo, (x, y), logo)
+
+        out = base.convert("RGB")
+        buf = _io.BytesIO()
+        out.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
+    except Exception as exc:
+        logger.warning("overlay_logo failed: %s — returning original image", exc)
+        return image_bytes
+
+
+def generate_product_posts(
+    prompts: list[str],
+    product_image_url: str,
+    logo_url: str | None = None,
+    aspect_ratio: str = "1:1",
+) -> dict:
+    """
+    Generate product posts with SeedDream (strict product preservation) + optional logo overlay.
+    Returns {"ok": True, "bytes_list": [b"..."], "urls": ["..."]} or {"ok": False, "error": "..."}.
+    """
+    bytes_list: list[bytes] = []
+    urls: list[str] = []
+    for i, prompt in enumerate(prompts):
+        result = generate_product_post(prompt, product_image_url, aspect_ratio=aspect_ratio)
+        if not result.get("ok"):
+            return result
+        img_bytes = result["bytes"]
+        if logo_url:
+            img_bytes = overlay_logo(img_bytes, logo_url)
+        bytes_list.append(img_bytes)
+        urls.append(result["url"])
+        if i < len(prompts) - 1:
+            time.sleep(2)
+    return {"ok": True, "bytes_list": bytes_list, "urls": urls}
