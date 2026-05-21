@@ -79,41 +79,37 @@ def _make_realistic(prompt: str) -> str:
 
 def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[str] | None = None) -> dict:
     """
-    Generate a single image with openai/gpt-image-2 via Replicate.
+    Generate a single image with bytedance/seedream-4.5 via Replicate.
     Retries both prediction creation and polling on transient errors.
     Returns {"ok": True, "url": "..."} or {"ok": False, "error": "..."}.
     """
     if not config.REPLICATE_API_TOKEN:
         return {"ok": False, "error": "REPLICATE_API_TOKEN not set."}
 
+    # SeedDream only accepts "1:1", "3:2", "2:3" — remap anything else
+    if aspect_ratio not in ("1:1", "3:2", "2:3"):
+        aspect_ratio = "1:1"
+
     realistic_prompt = _make_realistic(prompt)
 
-    # When a reference image is provided the model must keep the product unchanged.
-    # The prompt describes ONLY the background/environment — never the product itself —
-    # so the model has no reason to reimagine it.
     if reference_urls:
         ref_note = (
-            " Use the reference image as the subject. "
-            "Keep the subject 100% identical — same shape, colors, branding, texture, "
-            "proportions. Replace ONLY the background and lighting with the scene described. "
+            " CRITICAL: The product/subject from the reference image must appear IDENTICALLY — "
+            "same shape, colors, branding, texture, proportions. "
+            "Replace ONLY the background and lighting with the scene described. "
             "Do not alter the subject in any way."
         )
         realistic_prompt = realistic_prompt.rstrip(" ,") + ref_note
 
     input_params = {
         "prompt": realistic_prompt,
-        "quality": "auto",
-        "background": "auto",
-        "moderation": "low",
         "aspect_ratio": aspect_ratio,
-        "output_format": "jpeg",   # jpeg = max WhatsApp/Twilio compatibility
-        "number_of_images": 1,
-        "output_compression": 80,
+        "output_format": "jpeg",
+        "safety_tolerance": 3,
     }
 
-    # Pass first reference image to the model if supported
     if reference_urls:
-        input_params["image"] = reference_urls[0]
+        input_params["image_input"] = reference_urls[0]
 
     # --- create prediction with retry ---
     prediction = None
@@ -121,7 +117,7 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
     for attempt in range(_CREATE_RETRIES):
         try:
             prediction = replicate.predictions.create(
-                model="openai/gpt-image-2",
+                model="bytedance/seedream-4.5",
                 input=input_params,
             )
             break
@@ -172,7 +168,7 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
                 # Keep the image reference if one was provided — only simplify the prompt
                 try:
                     pred2 = replicate.predictions.create(
-                        model="openai/gpt-image-2", input=safe_params
+                        model="bytedance/seedream-4.5", input=safe_params
                     )
                     elapsed2 = 0
                     while elapsed2 < _MAX_WAIT:

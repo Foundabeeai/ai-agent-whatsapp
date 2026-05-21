@@ -1646,9 +1646,10 @@ def handle_incoming_message(
     # STEP: onboarding_report_freq
     if session.step == STEP_ONBOARDING_REPORT_FREQ:
         freq_map = {
-            "1": "biweekly", "biweekly": "biweekly",
-            "bi-weekly": "biweekly", "bi weekly": "biweekly", "twice": "biweekly",
+            "1": "weekly", "weekly": "weekly", "week": "weekly",
             "2": "monthly", "monthly": "monthly", "month": "monthly",
+            "3": "on_demand", "on demand": "on_demand", "on_demand": "on_demand",
+            "only when i ask": "on_demand", "demand": "on_demand", "ask": "on_demand",
         }
         freq = freq_map.get(choice)
         if not freq:
