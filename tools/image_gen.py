@@ -1,20 +1,45 @@
-"""Image generation via Replicate — openai/gpt-image-2 with async polling and retry."""
+"""Image generation via Replicate — bytedance/seedream-4.5 with async polling and retry."""
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import time
 
 import replicate
+import requests as _requests
 from replicate.exceptions import ReplicateError
 
 import config
 
 logger = logging.getLogger(__name__)
 
-
 os.environ.setdefault("REPLICATE_API_TOKEN", config.REPLICATE_API_TOKEN)
+
+
+def _to_replicate_url(url: str) -> str:
+    """
+    Upload a presigned S3 URL to Replicate's file store and return a clean
+    https://replicate.delivery/... URL that SeedDream can fetch reliably.
+    Falls back to the original URL on any error.
+    """
+    try:
+        resp = _requests.get(url, timeout=30)
+        resp.raise_for_status()
+        image_bytes = resp.content
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+        replicate_file = replicate.files.create(
+            io.BytesIO(image_bytes),
+            filename="ref.jpg",
+            content_type=content_type,
+        )
+        clean_url = str(replicate_file.urls.get("get", url)) if hasattr(replicate_file, "urls") else str(replicate_file)
+        logger.info("_to_replicate_url: uploaded %d bytes → %s", len(image_bytes), clean_url[:80])
+        return clean_url
+    except Exception as exc:
+        logger.warning("_to_replicate_url failed, using original URL: %s", exc)
+        return url
 
 _ASPECT_RATIOS = {
     "image_post": "1:1",
@@ -109,7 +134,9 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
     }
 
     if reference_urls:
-        input_params["image_input"] = reference_urls[0]
+        # SeedDream expects image_input as an array; re-host presigned URLs via Replicate
+        clean_url = _to_replicate_url(reference_urls[0])
+        input_params["image_input"] = [clean_url]
 
     # --- create prediction with retry ---
     prediction = None
@@ -225,9 +252,10 @@ def generate_image_with_reference(
     }
 
     if image_url:
-        # SeedDream accepts image_input as an array of URLs
-        input_params["image_input"] = [image_url]
-        logger.info("generate_image_with_reference: image_input=%s", image_url[:80])
+        # Re-host presigned S3 URL → clean Replicate URL; pass as array
+        clean_url = _to_replicate_url(image_url)
+        input_params["image_input"] = [clean_url]
+        logger.info("generate_image_with_reference: image_input=%s", clean_url[:80])
     else:
         logger.warning("generate_image_with_reference: no image_url — text-only generation")
 
@@ -342,11 +370,12 @@ def generate_product_post(
     )
     full_prompt = lock_prefix + prompt
 
+    clean_product_url = _to_replicate_url(product_image_url)
     input_params: dict = {
         "prompt": full_prompt,
         "aspect_ratio": aspect_ratio,
         "size": "2K",
-        "image_input": [product_image_url],
+        "image_input": [clean_product_url],
         "sequential_image_generation": "disabled",
         "disable_safety_checker": False,
     }
