@@ -1378,6 +1378,54 @@ def handle_incoming_message(
         save_session(session)
         # Fall through to the normal step handlers below with effective_text as clean/choice
 
+    # ── Smart intent intercept ─────────────────────────────────────────────
+    # If the user is onboarded and sends a message (text and/or image) that
+    # clearly expresses a creation intent, skip straight to the right step
+    # instead of forcing them through a menu.
+    _INTENT_ELIGIBLE_STEPS = {
+        STEP_CHOOSE_CONTENT_TYPE,
+        STEP_COLLECT_DESCRIPTION,
+        STEP_REEL_TYPE_SELECT,
+        STEP_REEL_PRODUCT_IMAGE,
+        STEP_REEL_UGC_DESCRIBE,
+    }
+    if (session.onboarding_complete and
+            session.step in _INTENT_ELIGIBLE_STEPS and
+            (clean or media_urls)):
+        fields_to_probe = ["content_type", "description", "reel_type"]
+        intent_answers = groq_ai.extract_voice_answers(clean, fields_to_probe) if clean else {}
+
+        # If user sent an image with a reel/video intent, pre-fill product image
+        ct = intent_answers.get("content_type", "")
+        rt = intent_answers.get("reel_type", "")
+        desc = intent_answers.get("description", "").strip()
+
+        if ct == "reel" or rt in ("cinematic", "ugc"):
+            # User wants a reel — apply what we know and jump to reel flow
+            if desc:
+                session.description = desc
+            if rt:
+                session.reel_type = rt
+            if media_urls and session.step != STEP_REEL_PRODUCT_IMAGE:
+                # They attached an image — treat it as their product image
+                session.step = STEP_REEL_PRODUCT_IMAGE
+                save_session(session)
+                # Fall through to STEP_REEL_PRODUCT_IMAGE handler which will process the image
+            elif rt == "cinematic" and session.step not in (STEP_REEL_PRODUCT_IMAGE, STEP_REEL_TYPE_SELECT):
+                session.step = STEP_REEL_TYPE_SELECT
+                save_session(session)
+            elif rt == "ugc" and session.step not in (STEP_REEL_UGC_DESCRIBE,):
+                session.step = STEP_REEL_UGC_DESCRIBE
+                save_session(session)
+        elif ct in ("image_post", "carousel") and desc and session.step == STEP_CHOOSE_CONTENT_TYPE:
+            # User described a post directly — set type + description and skip the menu
+            session.content_type = ct
+            session.description = desc
+            session.image_count = 1 if ct == "image_post" else session.image_count
+            session.step = STEP_COLLECT_DESCRIPTION
+            save_session(session)
+        # Fall through — the correct step handler below will now run
+
     # Steps where async work is running in the background — silently ignore any
     # user messages so we don't spam them with "still working" replies.
     # The background thread sends its own progress updates via Twilio REST.
@@ -1476,9 +1524,20 @@ def handle_incoming_message(
     if session.step == STEP_ONBOARDING_BRAND:
         if len(clean) < 3:
             return {"kind": "text", "text": beeq("onboarding_start")}
-        parts = clean.split(" - ", 1)
-        session.brand_name = parts[0].strip()
-        session.brand_description = clean
+        # Use Groq to extract just the brand name from natural language like
+        # "its called RealEstate NS" or "we are Nike, a shoe company"
+        extracted = groq_ai.extract_voice_answers(clean, ["brand_name", "brand_description"])
+        raw_name = extracted.get("brand_name", "").strip()
+        if not raw_name:
+            # Fallback: strip common filler prefixes
+            import re as _re
+            raw_name = _re.sub(
+                r"^(it'?s?\s+called|we\s+are|i\s+am|my\s+brand\s+is|my\s+business\s+is|"
+                r"the\s+brand\s+is|brand\s+name\s+is|called|name\s+is)\s+",
+                "", clean, flags=_re.IGNORECASE
+            ).split(" - ")[0].strip()
+        session.brand_name = raw_name or clean.split(" - ")[0].strip()
+        session.brand_description = extracted.get("brand_description", clean)
         session.step = STEP_ONBOARDING_GOAL
         save_session(session)
         return {"kind": "text", "text": beeq("onboarding_goal")}
