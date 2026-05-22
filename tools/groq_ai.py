@@ -569,6 +569,34 @@ def analyze_product_image(image_url: str) -> str:
         return "a product photographed against a plain background"
 
 
+def is_logo_image(image_url: str) -> bool:
+    """
+    Use Groq vision to detect whether an image is a brand logo/badge
+    (as opposed to a product photo or lifestyle photo).
+    Returns True if the image appears to be a logo.
+    """
+    try:
+        resp = _client().chat.completions.create(
+            model=config.GROQ_VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": (
+                        "Is this image a brand logo, icon, or badge? "
+                        "Answer with only 'yes' or 'no'."
+                    )},
+                ],
+            }],
+            temperature=0.1,
+            max_tokens=5,
+        )
+        answer = (resp.choices[0].message.content or "").strip().lower()
+        return answer.startswith("yes")
+    except Exception:
+        return False
+
+
 def generate_cinematic_product_prompts(
     product_description: str,
     brand: dict,

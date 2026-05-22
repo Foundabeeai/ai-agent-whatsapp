@@ -1039,26 +1039,43 @@ def _generate_initial_content_bg(phone: str) -> None:
 
     brand_refs = session.brand_assets or []
     ref_kwargs = {"reference_urls": brand_refs} if brand_refs else {}
+    # Avatar for badge = brand logo if detected, else first brand asset
+    avatar_url = session.brand_logo_url or (brand_refs[0] if brand_refs else None)
+    username = session.instagram_username or session.brand_name or "yourbrand"
+    brand_name_str = session.brand_name or ""
+
+    def _gen_and_stamp(replicate_urls: list[str], media_kind: str) -> list[str]:
+        """Upload Replicate URLs to S3 then stamp profile badge. Returns final presigned URLs."""
+        s3 = aws_storage.upload_urls(replicate_urls, user_id, media_kind=media_kind)
+        if not s3.get("ok"):
+            return []
+        stamped = _stamp_s3_images(
+            s3["s3_urls"],
+            username=username,
+            brand_name=brand_name_str,
+            avatar_url=avatar_url,
+            user_id=user_id,
+        )
+        return stamped
 
     queue: list[dict] = []
 
     # 3 individual posts
     for i in range(1, 4):
         try:
-            _send_async(phone, {"kind": "text", "text": f"🎨 Creating post {i} of 3... (~90 seconds)"})
-            prompts = groq_ai.generate_image_prompts(f"Post {i} for {description}", count=1)
+            _send_async(phone, {"kind": "text", "text": f"🎨 Creating post {i} of 3..."})
+            prompts = groq_ai.generate_image_prompts(f"Post {i} for {description}", count=1, brand=brand)
             gen = image_gen.generate_images(prompts, content_type="image_post", **ref_kwargs)
             if not gen.get("ok"):
                 _send_async(phone, {"kind": "text", "text": f"⚠️ Post {i} failed: {gen.get('error')}"})
                 continue
-            s3 = aws_storage.upload_urls(gen["urls"], user_id, media_kind="initial_post")
-            if not s3.get("ok"):
+            final_urls = _gen_and_stamp(gen["urls"], "initial_post")
+            if not final_urls:
                 continue
             caption = groq_ai.generate_caption(description, "image_post", website_url=session.website_url or "")
-            url = s3["s3_urls"][0]
             db.log_post(phone_number=phone, content_type="image_post",
-                        image_urls=[url], caption=caption, prompts=prompts, status="draft")
-            queue.append({"content_type": "image_post", "image_urls": [url], "caption": caption})
+                        image_urls=final_urls, caption=caption, prompts=prompts, status="draft")
+            queue.append({"content_type": "image_post", "image_urls": final_urls, "caption": caption})
         except Exception as exc:
             _send_async(phone, {"kind": "text", "text": f"⚠️ Post {i} error: {exc}"})
         time.sleep(1)
@@ -1075,12 +1092,12 @@ def _generate_initial_content_bg(phone: str) -> None:
         prompts = groq_ai.generate_brand_consistent_prompts(description, count=count, brand=brand)
         gen = image_gen.generate_images(prompts, content_type="carousel", **ref_kwargs)
         if gen.get("ok"):
-            s3 = aws_storage.upload_urls(gen["urls"], user_id, media_kind="initial_carousel")
-            if s3.get("ok"):
+            slide_urls = _gen_and_stamp(gen["urls"], "initial_carousel")
+            if slide_urls:
                 caption = groq_ai.generate_caption(description, "carousel", website_url=session.website_url or "")
                 db.log_post(phone_number=phone, content_type="carousel",
-                            image_urls=s3["s3_urls"], caption=caption, prompts=prompts, status="draft")
-                queue.append({"content_type": "carousel", "image_urls": s3["s3_urls"], "caption": caption})
+                            image_urls=slide_urls, caption=caption, prompts=prompts, status="draft")
+                queue.append({"content_type": "carousel", "image_urls": slide_urls, "caption": caption})
         else:
             _send_async(phone, {"kind": "text", "text": f"⚠️ Carousel failed: {gen.get('error')}"})
     except Exception as exc:
@@ -1661,8 +1678,16 @@ def handle_incoming_message(
                         media_kind="brand_asset",
                     )
                     if upload.get("ok") and upload.get("s3_url"):
-                        session.brand_assets.append(upload["s3_url"])
+                        s3_url = upload["s3_url"]
+                        session.brand_assets.append(s3_url)
                         saved_this_batch += 1
+                        # Auto-detect logo using Groq vision (only store first one found)
+                        if not session.brand_logo_url:
+                            try:
+                                if groq_ai.is_logo_image(s3_url):
+                                    session.brand_logo_url = s3_url
+                            except Exception:
+                                pass
                     else:
                         failed_this_batch += 1
                 except Exception:

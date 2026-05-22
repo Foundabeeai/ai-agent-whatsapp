@@ -88,6 +88,7 @@ class UserSession:
     reference_content_url: Optional[str] = None
     competitor_handles: list[str] = field(default_factory=list)
     brand_assets: list[str] = field(default_factory=list)
+    brand_logo_url: Optional[str] = None   # S3 URL of detected brand logo
     posting_schedule: Optional[str] = None
     report_frequency: Optional[str] = None
 
