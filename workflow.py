@@ -764,33 +764,52 @@ def _generate_and_notify_bg(phone: str) -> None:
             # Resolve brand colors for the compositor
             brand_hex = groq_ai.get_brand_hex_colors(session.brand_colors or "")
 
-            # Generate one Replicate image for the hook slide background
-            hook_image_bytes: bytes | None = None
-            session.bg_status = "🎨 Generating hook image with AI..."
+            # Generate background images: cover + extra for content slides
+            # Formula: total images = max(1, total_slides // 2)
+            total_slides = 1 + slide_count
+            n_bg_images  = max(1, total_slides // 2)
+
+            session.bg_status = f"🎨 Generating {n_bg_images} background image(s)..."
             save_session(session)
-            _send_async(phone, {"kind": "text", "text": "🎨 Generating the cover image and rendering slides..."})
+            _send_async(phone, {"kind": "text",
+                                "text": f"🎨 Generating backgrounds and rendering {total_slides} slides..."})
+
             brand_name_hint = f" for {brand['brand_name']}" if brand.get("brand_name") else ""
-            hook_prompt = groq_ai.generate_image_prompts(
-                f"Cinematic wide-angle photorealistic cover image{brand_name_hint}: {description}. "
-                f"Brand colors: {session.brand_colors or 'professional dark tones'}. "
-                "No text overlays, dramatic commercial lighting, editorial feel.",
-                count=1,
-                brand=brand,
-            )[0]
-            hook_gen = image_gen.generate_image(hook_prompt, aspect_ratio="1:1")
-            if hook_gen.get("ok"):
-                import requests as _req
+            def _make_bg_prompt(i: int) -> str:
+                base = (
+                    f"Cinematic editorial photo{brand_name_hint}: {description}. "
+                    f"Brand colors: {session.brand_colors or 'professional dark tones'}. "
+                    "No text, no logos, dramatic commercial lighting, magazine quality."
+                )
+                return base
+
+            import requests as _req
+            hook_image_bytes: bytes | None = None
+            extra_bg_bytes: list[bytes] = []
+
+            for bi in range(n_bg_images):
                 try:
-                    r = _req.get(hook_gen["url"], timeout=30)
-                    if r.ok:
-                        hook_image_bytes = r.content
+                    prompt = _make_bg_prompt(bi)
+                    ref = [session.brand_assets[0]] if session.brand_assets else None
+                    gen = image_gen.generate_image(
+                        prompt,
+                        aspect_ratio="1:1",
+                        reference_urls=ref,
+                    )
+                    if gen.get("ok"):
+                        r = _req.get(gen["url"], timeout=30)
+                        if r.ok:
+                            if bi == 0:
+                                hook_image_bytes = r.content
+                            else:
+                                extra_bg_bytes.append(r.content)
                 except Exception:
                     pass
 
             session.bg_status = "🎨 Rendering carousel slides..."
             save_session(session)
 
-            avatar_url = session.brand_assets[0] if session.brand_assets else None
+            avatar_url = session.brand_logo_url or (session.brand_assets[0] if session.brand_assets else None)
             slide_bytes_list = make_research_carousel(
                 carousel_content=carousel_content,
                 username=session.instagram_username or "yourbrand",
@@ -798,6 +817,7 @@ def _generate_and_notify_bg(phone: str) -> None:
                 avatar_url=avatar_url,
                 brand_colors=brand_hex,
                 hook_image_bytes=hook_image_bytes,
+                extra_bg_bytes=extra_bg_bytes,
             )
 
             session.bg_status = "☁️ Uploading to secure storage..."
