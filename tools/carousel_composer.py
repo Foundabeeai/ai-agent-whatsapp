@@ -180,6 +180,10 @@ def _rounded_rect(draw: ImageDraw.ImageDraw, xy, r: int, fill, alpha: int = 255)
     x1, y1, x2, y2 = xy
     if x2 <= x1 or y2 <= y1:
         return
+    # Clamp radius so rectangles never get inverted coordinates
+    r = min(r, (x2 - x1) // 2, (y2 - y1) // 2)
+    if r < 0:
+        r = 0
     c = (*fill[:3], alpha)
     draw.rectangle([x1+r, y1, x2-r, y2], fill=c)
     draw.rectangle([x1, y1+r, x2, y2-r], fill=c)
