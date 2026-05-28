@@ -46,9 +46,9 @@ def _get_foundabee_db() -> Database:
     if _foundabee_client is None:
         _foundabee_client = MongoClient(
             config.FOUNDABEE_MONGO_URI,
-            serverSelectionTimeoutMS=8000,
-            connectTimeoutMS=8000,
-            socketTimeoutMS=15000,
+            serverSelectionTimeoutMS=4000,
+            connectTimeoutMS=4000,
+            socketTimeoutMS=5000,
         )
     return _foundabee_client[config.FOUNDABEE_DB_NAME]
 

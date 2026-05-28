@@ -478,45 +478,51 @@ def _verify_email_bg(phone: str, email: str) -> None:
         _do_verify(session, phone, email, verified_user_id)
         return
 
-    # ── 1. Check directly against the Foundabee database (source of truth) ──
-    db_check = db.check_enterprise_in_foundabee_db(email)
-    _logger.info("_verify_email_bg: db_check for %s → %s", email, db_check)
+    # ── 1 & 2: Run DB check and API check in parallel (5s total budget) ────
+    import concurrent.futures as _cf
+
+    db_check = {"enterprise": False}
+    api_result = {"ok": False, "registered": False, "enterprise": False}
+
+    with _cf.ThreadPoolExecutor(max_workers=2) as pool:
+        db_fut  = pool.submit(db.check_enterprise_in_foundabee_db, email)
+        api_fut = pool.submit(check_user.check_user_registration, email)
+        try:
+            db_check = db_fut.result(timeout=6)
+        except Exception as exc:
+            _logger.warning("_verify_email_bg: db_check failed: %s", exc)
+        try:
+            api_result = api_fut.result(timeout=6)
+        except Exception as exc:
+            _logger.warning("_verify_email_bg: api_check failed: %s", exc)
+
+    _logger.info("_verify_email_bg: db=%s api=%s", db_check, api_result)
 
     verified_user_id = ""
     if db_check.get("enterprise"):
-        # Email found with active enterprise plan in Foundabee DB — accept immediately
         verified_user_id = db_check.get("user_id") or ""
+    elif api_result.get("ok") and api_result.get("registered") and api_result.get("enterprise"):
+        verified_user_id = str(api_result.get("user_id") or "")
     else:
-        # ── 2. Fallback: try the Foundabee API ──────────────────────────────
-        try:
-            result = check_user.check_user_registration(email)
-        except Exception as exc:
-            result = {"ok": False, "error": str(exc)}
-
-        if result.get("ok") and result.get("registered") and result.get("enterprise"):
-            verified_user_id = str(result.get("user_id") or "")
+        # ── 3. Last resort: previously verified session for this email ───────
+        prior = db.find_verified_session_by_email(email)
+        if prior and prior.get("verified_enterprise"):
+            verified_user_id = prior.get("verified_user_id") or ""
         else:
-            # ── 3. Last resort: check our own sessions (same email, any number) ─
-            prior = db.find_verified_session_by_email(email)
-            if prior and prior.get("verified_enterprise"):
-                verified_user_id = prior.get("verified_user_id") or ""
+            session.step = STEP_AWAITING_EMAIL
+            save_session(session)
+            if not api_result.get("registered") and db_check.get("found") is False:
+                _send_async(phone, {"kind": "text",
+                                    "text": beeq("email_not_found")})
+            elif not api_result.get("ok") and not db_check.get("enterprise"):
+                _send_async(phone, {"kind": "text",
+                                    "text": "❌ Could not reach the verification service. "
+                                            "Please try again in a moment."})
             else:
-                # All three checks failed — reject
-                session.step = STEP_AWAITING_EMAIL
-                save_session(session)
-                if not result.get("ok"):
-                    _send_async(phone, {"kind": "text",
-                                        "text": "❌ Could not reach the verification service. "
-                                                "Please try again in a moment."})
-                elif not result.get("registered"):
-                    _send_async(phone, {"kind": "text",
-                                        "text": "❌ This email is not registered with BeeQ. "
-                                                "Please try another email."})
-                else:
-                    _send_async(phone, {"kind": "text",
-                                        "text": "⚠️ Your BeeQ account is not on an enterprise plan. "
-                                                "This WhatsApp automation is for enterprise subscribers only."})
-                return
+                _send_async(phone, {"kind": "text",
+                                    "text": "⚠️ Your account isn't on an enterprise plan. "
+                                            "Upgrade at foundabee.com to use this."})
+            return
 
     # Verified ✅
     _do_verify(session, phone, email, verified_user_id)
