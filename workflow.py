@@ -467,6 +467,21 @@ def _verify_email_bg(phone: str, email: str) -> None:
     """Run BeeQ user check and advance session state (background thread)."""
     import logging as _log
     _logger = _log.getLogger(__name__)
+    try:
+        _verify_email_bg_inner(phone, email)
+    except Exception as exc:
+        _logger.error("_verify_email_bg unhandled: %s", exc)
+        session = get_session(phone)
+        session.step = STEP_AWAITING_EMAIL
+        session.bg_status = ""
+        save_session(session)
+        _send_async(phone, {"kind": "text",
+                            "text": "❌ Verification error. Please send your email again."})
+
+
+def _verify_email_bg_inner(phone: str, email: str) -> None:
+    import logging as _log
+    _logger = _log.getLogger(__name__)
     session = get_session(phone)
     email = email.strip().lower()
 
@@ -1544,7 +1559,15 @@ def handle_incoming_message(
         email = _extract_email(clean)
         if not email:
             return {"kind": "text", "text": beeq("welcome")}
+
+        # Owner emails — verify instantly without any background thread
+        if email.strip().lower() in config.OWNER_EMAILS:
+            _do_verify(session, phone, email.strip().lower(), email.strip().lower())
+            return {"kind": "none"}
+
         session.step = STEP_VERIFYING_EMAIL
+        session.verified_email = email
+        session.bg_status = datetime.now(timezone.utc).isoformat()  # reuse as step_start_time
         save_session(session)
         _start_bg(_verify_email_bg, phone, email)
         return {"kind": "text", "text": beeq("verifying")}
@@ -1553,6 +1576,20 @@ def handle_incoming_message(
     # STEP: verifying_email (async in progress)
     # ------------------------------------------------------------------
     if session.step == STEP_VERIFYING_EMAIL:
+        # bg_status holds the ISO timestamp when verification started
+        step_age = None
+        try:
+            started = datetime.fromisoformat(session.bg_status)
+            step_age = (datetime.now(timezone.utc) - started).total_seconds()
+        except Exception:
+            pass
+        # If stuck for more than 90 seconds, reset so they can try again
+        if step_age is None or step_age > 90:
+            session.step = STEP_AWAITING_EMAIL
+            session.bg_status = ""
+            save_session(session)
+            return {"kind": "text",
+                    "text": "⚠️ Verification timed out. Please send your email again."}
         return {"kind": "text", "text": beeq("still_verifying")}
 
     # ------------------------------------------------------------------
