@@ -147,49 +147,60 @@ def check_enterprise_in_foundabee_db(email: str) -> dict:
         # Case-insensitive exact match on email — handles mixed-case stored values
         email_regex = re.compile(f"^{re.escape(email)}$", re.IGNORECASE)
 
-        pipeline = [
-            # Only active enterprise subscriptions
-            {
-                "$match": {
-                    "status": "ACTIVE",
-                    "subscription_plan.product.name": {
-                        "$regex": "enterprise",
-                        "$options": "i",
-                    },
-                }
-            },
-            # Join users on uuid
-            {
-                "$lookup": {
-                    "from": "users",
-                    "localField": "user",
-                    "foreignField": "uuid",
-                    "as": "u",
-                }
-            },
-            {"$unwind": "$u"},
-            # Case-insensitive email match
-            {"$match": {"u.email": {"$regex": email_regex}}},
-            {
-                "$project": {
-                    "plan": "$subscription_plan.product.name",
-                    "user_id": "$u.uuid",
-                    "email": "$u.email",
-                }
-            },
-            {"$limit": 1},
-        ]
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
 
-        results = list(foundabee_db.subscription_plans.aggregate(pipeline))
-        if results:
-            doc = results[0]
-            return {
-                "found": True,
-                "enterprise": True,
-                "user_id": str(doc.get("user_id") or ""),
-                "plan": str(doc.get("plan") or "enterprise"),
-            }
-        return {"found": False, "enterprise": False}
+        # ── Step 1: find the user by email ──────────────────────────────────
+        user_doc = foundabee_db.users.find_one(
+            {"email": {"$regex": email_regex}},
+            {"uuid": 1, "email": 1, "_id": 1},
+        )
+        _log.info("check_enterprise: user_doc for %s → %s", email, user_doc)
+
+        if not user_doc:
+            return {"found": False, "enterprise": False}
+
+        user_uuid = user_doc.get("uuid") or str(user_doc.get("_id") or "")
+
+        # ── Step 2: find ANY subscription for this user ──────────────────────
+        # Look up by uuid OR _id to handle schema variations
+        sub_query = {
+            "$or": [
+                {"user": user_uuid},
+                {"user": user_doc.get("_id")},
+                {"userId": user_uuid},
+                {"userId": user_doc.get("_id")},
+            ]
+        }
+        all_subs = list(foundabee_db.subscription_plans.find(sub_query, {"status": 1, "subscription_plan": 1}).limit(10))
+        _log.info("check_enterprise: all_subs for uuid=%s → %s", user_uuid, all_subs)
+
+        # ── Step 3: match enterprise + active (flexible status check) ────────
+        ACTIVE_STATUSES = {"active", "active_recurring", "trialing", "paid", "current"}
+        for sub in all_subs:
+            status = str(sub.get("status") or "").lower()
+            plan_name = str(
+                (sub.get("subscription_plan") or {}).get("product", {}).get("name") or ""
+            ).lower()
+            _log.info("check_enterprise: sub status=%r plan_name=%r", status, plan_name)
+            is_active = status in ACTIVE_STATUSES or status.startswith("active")
+            is_enterprise = "enterprise" in plan_name or "pro" in plan_name
+            if is_active and is_enterprise:
+                return {
+                    "found": True,
+                    "enterprise": True,
+                    "user_id": user_uuid,
+                    "plan": plan_name,
+                }
+
+        # No active enterprise sub found — but user exists
+        # Log what statuses/plans we did find so we can diagnose
+        _log.warning(
+            "check_enterprise: user %s found but no active enterprise sub. subs=%s",
+            email,
+            [(s.get("status"), (s.get("subscription_plan") or {}).get("product", {}).get("name")) for s in all_subs],
+        )
+        return {"found": True, "enterprise": False}
     except Exception as exc:
         return {"found": False, "enterprise": False, "error": str(exc)}
 

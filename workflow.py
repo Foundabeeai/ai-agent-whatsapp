@@ -465,11 +465,22 @@ def _voice_reply(phone: str, text: str) -> dict:
 
 def _verify_email_bg(phone: str, email: str) -> None:
     """Run BeeQ user check and advance session state (background thread)."""
+    import logging as _log
+    _logger = _log.getLogger(__name__)
     session = get_session(phone)
     email = email.strip().lower()
 
+    # ── 0. Owner bypass — always verified ────────────────────────────────────
+    if email in config.OWNER_EMAILS:
+        _logger.info("_verify_email_bg: owner bypass for %s", email)
+        verified_user_id = email  # use email as user_id placeholder
+        # Fall through to the "Verified ✅" block below
+        _do_verify(session, phone, email, verified_user_id)
+        return
+
     # ── 1. Check directly against the Foundabee database (source of truth) ──
     db_check = db.check_enterprise_in_foundabee_db(email)
+    _logger.info("_verify_email_bg: db_check for %s → %s", email, db_check)
 
     verified_user_id = ""
     if db_check.get("enterprise"):
@@ -508,6 +519,11 @@ def _verify_email_bg(phone: str, email: str) -> None:
                 return
 
     # Verified ✅
+    _do_verify(session, phone, email, verified_user_id)
+
+
+def _do_verify(session, phone: str, email: str, verified_user_id: str) -> None:
+    """Finalise a verified session and route user to correct next step."""
     session.verified_email = email
     session.verified_user_id = verified_user_id
     session.verified_enterprise = True
@@ -532,7 +548,6 @@ def _verify_email_bg(phone: str, email: str) -> None:
     user_id_line = f"\nYour user ID: `{session.verified_user_id}`" if session.verified_user_id else ""
 
     if session.onboarding_complete and session.has_instagram_account():
-        # Returning user on same phone — skip straight to content creation
         save_session(session)
         _send_async(phone, {"kind": "text",
                             "text": (f"Welcome back! Connected to @{session.instagram_username}.{user_id_line}\n\n"
@@ -542,7 +557,6 @@ def _verify_email_bg(phone: str, email: str) -> None:
         send_content_type_menu(phone)
 
     elif session.onboarding_complete and not session.has_instagram_account():
-        # Brand profile copied from another device — just need Instagram
         session.step = STEP_COLLECT_INSTAGRAM
         save_session(session)
         _send_async(phone, {"kind": "text",
@@ -551,7 +565,6 @@ def _verify_email_bg(phone: str, email: str) -> None:
                                      "Just link your Instagram and you're ready to go.\n\n"
                                      "What's your Instagram username? (e.g. @yourbrand)")})
     else:
-        # First-time user — go straight into onboarding (Instagram comes later in the flow)
         session.step = STEP_ONBOARDING_BRAND
         save_session(session)
         _send_async(phone, {"kind": "text",

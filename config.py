@@ -58,6 +58,13 @@ FOUNDABEE_DB_NAME = _get("FOUNDABEE_DB_NAME", "demo-foundabee")
 # Separate MongoDB URI for the Foundabee app DB (may be a remote AWS server)
 FOUNDABEE_MONGO_URI = _get("FOUNDABEE_MONGO_URI", MONGO_URI)
 
+# Owner / admin emails — bypass enterprise check (comma-separated in .env)
+OWNER_EMAILS: set[str] = {
+    e.strip().lower()
+    for e in _get("OWNER_EMAILS", "amay0varghese@gmail.com").split(",")
+    if e.strip()
+}
+
 # Foundabee user check
 CHECK_USER_BASE_URL = _get("CHECK_USER_BASE_URL", "http://3.97.167.111:8002/check/api/user")
 INTEGRATION_LOOKUP_API_KEY = _get("INTEGRATION_LOOKUP_API_KEY", "amay-test")
