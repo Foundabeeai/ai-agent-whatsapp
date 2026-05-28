@@ -28,6 +28,7 @@ from typing import Optional
 from dateutil import parser as dateutil_parser
 import pytz
 
+import config
 import db
 from session_store import (
     UserSession,
