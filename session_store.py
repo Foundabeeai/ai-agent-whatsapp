@@ -9,7 +9,7 @@ from typing import Any, Optional
 from db import get_db
 
 
-VERIFICATION_TTL = timedelta(days=30)
+VERIFICATION_TTL = timedelta(days=30)  # kept for legacy compat but not used for expiry check
 
 # Workflow steps (in order)
 STEP_AWAITING_EMAIL = "awaiting_email"
@@ -146,13 +146,8 @@ class UserSession:
     daily_suggestion: Optional[dict] = None           # {content_type, image_urls, caption, reel_type, post_id}
 
     def is_verification_valid(self) -> bool:
-        if not self.verified_enterprise or not self.verified_at:
-            return False
-        try:
-            verified_dt = datetime.fromisoformat(self.verified_at)
-        except (ValueError, TypeError):
-            return False
-        return datetime.now(timezone.utc) - verified_dt < VERIFICATION_TTL
+        """Once a phone number is verified as enterprise, it stays verified permanently."""
+        return bool(self.verified_enterprise)
 
     def set_verified_at_now(self) -> None:
         self.verified_at = datetime.now(timezone.utc).isoformat()
