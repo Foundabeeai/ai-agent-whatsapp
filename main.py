@@ -15,8 +15,12 @@ load_dotenv()
 
 from workflow import handle_incoming_message
 import db
+import scheduler
 
 app = Flask(__name__)
+
+# Start the daily content scheduler in the background
+scheduler.start()
 logger = logging.getLogger(__name__)
 
 # ── Twilio duplicate-webhook deduplication ─────────────────────────────────

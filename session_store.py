@@ -60,6 +60,13 @@ STEP_REEL_AD_SCRIPT_REVIEW    = "reel_ad_script_review"     # confirm AI script 
 STEP_REEL_AD_USER_PHOTO       = "reel_ad_user_photo"        # upload user selfie / avatar (Ad)
 STEP_REEL_APPROVAL            = "reel_approval"             # approve / regenerate final reel
 
+# Daily proactive suggestion steps
+STEP_DAILY_SUGGESTION         = "daily_suggestion"          # user reviewing today's auto-generated content
+STEP_DAILY_SUGGESTION_PUBLISH = "daily_suggestion_publish"  # awaiting schedule time after approval
+
+# Monthly content limits
+MONTHLY_LIMITS = {"image_post": 10, "carousel": 8, "reel": 12}
+
 
 @dataclass
 class UserSession:
@@ -133,6 +140,10 @@ class UserSession:
     reel_clone_awaiting_confirm: bool = False      # True while waiting for transcript confirmation
     reel_clone_pending_audio_url: Optional[str] = None  # Twilio URL of recorded sample (pre-upload)
     reel_video_url: Optional[str] = None           # final output video S3 URL
+
+    # Daily proactive suggestion
+    last_daily_suggestion_date: Optional[str] = None  # ISO date "YYYY-MM-DD" last sent
+    daily_suggestion: Optional[dict] = None           # {content_type, image_urls, caption, reel_type, post_id}
 
     def is_verification_valid(self) -> bool:
         if not self.verified_enterprise or not self.verified_at:

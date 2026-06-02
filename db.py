@@ -304,6 +304,35 @@ def get_scheduled_posts(phone_number: str) -> list[dict]:
         return []
 
 
+def get_monthly_counts(phone_number: str, year: int, month: int) -> dict:
+    """
+    Return post counts for a specific calendar month, grouped by content_type.
+    Counts ALL statuses (published, scheduled, draft).
+    Shape: {"image_post": N, "carousel": N, "reel": N}
+    """
+    counts = {"image_post": 0, "carousel": 0, "reel": 0}
+    try:
+        from calendar import monthrange
+        db = get_db()
+        month_start = datetime(year, month, 1, tzinfo=timezone.utc)
+        last_day = monthrange(year, month)[1]
+        month_end = datetime(year, month, last_day, 23, 59, 59, tzinfo=timezone.utc)
+        pipeline = [
+            {"$match": {
+                "phone_number": phone_number,
+                "created_at": {"$gte": month_start, "$lte": month_end},
+            }},
+            {"$group": {"_id": "$content_type", "n": {"$sum": 1}}},
+        ]
+        for row in db.posts.aggregate(pipeline):
+            ctype = row["_id"] or "image_post"
+            if ctype in counts:
+                counts[ctype] = row["n"]
+    except Exception:
+        pass
+    return counts
+
+
 def format_post_summary(phone_number: str) -> str:
     """
     Build a human-readable summary of the user's post queue.

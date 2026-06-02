@@ -77,6 +77,8 @@ from session_store import (
     STEP_REEL_AD_SCRIPT_REVIEW,
     STEP_REEL_AD_USER_PHOTO,
     STEP_REEL_APPROVAL,
+    STEP_DAILY_SUGGESTION,
+    STEP_DAILY_SUGGESTION_PUBLISH,
 )
 from tools import check_user, groq_ai, image_gen, aws_storage, zerini
 from tools.beeq_voice import msg as beeq, dynamic as beeq_dyn
@@ -2839,6 +2841,96 @@ def handle_incoming_message(
             return {"kind": "none"}
         # Unrecognised — re-prompt
         return {"kind": "text", "text": beeq("publish_error")}
+
+    # ------------------------------------------------------------------
+    # STEP: daily_suggestion — user reviewing today's proactive content
+    # ------------------------------------------------------------------
+    if session.step == STEP_DAILY_SUGGESTION:
+        choice = _choice(body, button_payload).lower()
+        suggestion = session.daily_suggestion or {}
+        content_type = suggestion.get("content_type", "image_post")
+        post_id = suggestion.get("post_id")
+        reel_type = suggestion.get("reel_type")
+
+        # ── Skip ──
+        if any(w in choice for w in ("skip", "dismiss", "no", "next", "later", "pass")):
+            # Update draft to skipped (keep as draft in DB, just move on)
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            session.daily_suggestion = None
+            save_session(session)
+            send_content_type_menu(phone)
+            return {"kind": "text", "text": "No problem! Type *create* anytime to make something. 🐝"}
+
+        # ── Reel: make it ──
+        if content_type == "reel" and any(w in choice for w in ("make", "yes", "start", "create", "go", "ok", "okay", "sure", "post now", "post")):
+            # Pre-fill reel type and route to reel flow
+            session.reel_type = reel_type or "cinematic"
+            session.content_type = "reel"
+            if reel_type in ("ugc", "ad"):
+                session.step = STEP_REEL_UGC_DESCRIBE if reel_type == "ugc" else STEP_REEL_AD_PRODUCT_IMAGE
+            else:
+                session.step = STEP_REEL_PRODUCT_IMAGE
+            session.daily_suggestion = None
+            save_session(session)
+            reel_label = {"cinematic": "Cinematic", "ugc": "UGC", "ad": "Ad"}.get(reel_type or "cinematic", "Cinematic")
+            return {"kind": "text", "text": f"🎬 Let's make your {reel_label} reel!\n\n"
+                                            f"{'Upload a product photo to get started 📸' if reel_type != 'ugc' else 'Tell me about the product or service you want to feature:'}"}
+
+        # ── Post Now ──
+        if any(w in choice for w in ("post now", "post it", "publish", "yes", "approve", "post", "✅", "go", "ok", "okay", "sure")):
+            image_urls = suggestion.get("image_urls", [])
+            caption = suggestion.get("caption", "")
+            if not image_urls:
+                session.step = STEP_CHOOSE_CONTENT_TYPE
+                session.daily_suggestion = None
+                save_session(session)
+                send_content_type_menu(phone)
+                return {"kind": "none"}
+            # Pre-fill session for publishing
+            session.content_type = content_type
+            session.generated_image_urls = image_urls
+            session.caption = caption
+            session.publish_action = "now"
+            session.step = STEP_PUBLISHING
+            session.daily_suggestion = None
+            save_session(session)
+            _start_bg(_publish_bg, phone)
+            return {"kind": "text", "text": "📤 " + beeq("publishing")}
+
+        # ── Schedule ──
+        if any(w in choice for w in ("schedule", "later", "time", "⏰")):
+            session.step = STEP_DAILY_SUGGESTION_PUBLISH
+            save_session(session)
+            return {"kind": "text", "text": "⏰ When should I post this?\n"
+                                            "_(e.g. \"tomorrow at 9am\", \"Friday 6pm\")_"}
+
+        # Unrecognised — re-prompt
+        return {"kind": "text", "text": "Reply *post now*, *schedule*, or *skip* 🐝"}
+
+    # ------------------------------------------------------------------
+    # STEP: daily_suggestion_publish — awaiting schedule time
+    # ------------------------------------------------------------------
+    if session.step == STEP_DAILY_SUGGESTION_PUBLISH:
+        suggestion = session.daily_suggestion or {}
+        image_urls = suggestion.get("image_urls", [])
+        caption = suggestion.get("caption", "")
+        content_type = suggestion.get("content_type", "image_post")
+
+        scheduled_dt = _parse_user_time(body, session.user_timezone)
+        if not scheduled_dt or scheduled_dt <= datetime.now(timezone.utc):
+            return {"kind": "text", "text": "⚠️ I didn't catch that. Try something like \"tomorrow at 9am\" or \"Friday 6pm\":"}
+
+        session.content_type = content_type
+        session.generated_image_urls = image_urls
+        session.caption = caption
+        session.publish_action = "schedule"
+        session.scheduled_at = scheduled_dt.isoformat()
+        session.step = STEP_PUBLISHING
+        session.daily_suggestion = None
+        save_session(session)
+        _start_bg(_publish_bg, phone)
+        friendly = _friendly_time(scheduled_dt, session.user_timezone)
+        return {"kind": "text", "text": f"⏰ Scheduled for {friendly}! 🐝"}
 
     # Fallback — shouldn't normally be reached
     session.step = STEP_AWAITING_EMAIL
