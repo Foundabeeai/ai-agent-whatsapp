@@ -9,7 +9,7 @@ from typing import Any, Optional
 from db import get_db
 
 
-VERIFICATION_TTL = timedelta(hours=2)
+VERIFICATION_TTL = timedelta(days=30)
 
 # Workflow steps (in order)
 STEP_AWAITING_EMAIL = "awaiting_email"
