@@ -52,6 +52,7 @@ from session_store import (
     STEP_ONBOARDING_VOICE_CUSTOM,
     STEP_ONBOARDING_COLORS,
     STEP_ONBOARDING_REFERENCE,
+    STEP_ONBOARDING_REFERENCE_SELECT,
     STEP_ONBOARDING_COMPETITORS,
     STEP_ONBOARDING_ASSETS,
     STEP_ONBOARDING_SCHEDULE,
@@ -79,6 +80,10 @@ from session_store import (
     STEP_REEL_APPROVAL,
     STEP_DAILY_SUGGESTION,
     STEP_DAILY_SUGGESTION_PUBLISH,
+    STEP_AGENT_COLLECTING,
+    STEP_AGENT_IMAGE_POST,
+    STEP_AGENT_CAROUSEL,
+    STEP_AGENT_REEL,
 )
 from tools import check_user, groq_ai, image_gen, aws_storage, zerini
 from tools.beeq_voice import msg as beeq, dynamic as beeq_dyn
@@ -228,8 +233,9 @@ def _pending_fields_for_step(step: str, session) -> list[str]:
         STEP_ONBOARDING_VOICE:       ["brand_voice"],
         STEP_ONBOARDING_VOICE_CUSTOM:["brand_voice"],
         STEP_ONBOARDING_COLORS:      ["brand_colors"],
-        STEP_ONBOARDING_REFERENCE:   [],
-        STEP_ONBOARDING_COMPETITORS: ["competitor_handles"],
+        STEP_ONBOARDING_REFERENCE:        [],
+        STEP_ONBOARDING_REFERENCE_SELECT: [],
+        STEP_ONBOARDING_COMPETITORS:      ["competitor_handles"],
         STEP_ONBOARDING_ASSETS:      [],
         STEP_ONBOARDING_SCHEDULE:    ["posting_schedule"],
         STEP_ONBOARDING_REPORT_FREQ: ["report_frequency"],
@@ -898,7 +904,11 @@ def _generate_and_notify_bg(phone: str) -> None:
             _send_async(phone, {"kind": "text", "text": "🚀 Got it! Working on AI prompts now..."})
 
             # Pass full brand profile so prompts use real name, colors, voice, not invented ones
-            prompts = groq_ai.generate_image_prompts(description, count=count, brand=brand)
+            # Inject style skill as additional brand context if available
+            style_skill = session.post_style_skill or db.get_post_style_skill(phone)
+            style_ctx = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
+            brand_with_style = {**brand, "_style_context": style_ctx} if style_ctx else brand
+            prompts = groq_ai.generate_image_prompts(description, count=count, brand=brand_with_style)
 
             session.image_prompts = prompts
             save_session(session)
@@ -1159,12 +1169,16 @@ def _generate_initial_content_bg(phone: str) -> None:
                                 f"⏱ Estimated time: ~{count * 2}–{count * 2 + 1} minutes\n"
                                 "All slides will follow your brand colors and style."
                             )})
-        prompts = groq_ai.generate_brand_consistent_prompts(description, count=count, brand=brand)
+        style_skill_init = session.post_style_skill or db.get_post_style_skill(phone)
+        style_ctx_init = groq_ai.style_skill_to_prompt_context(style_skill_init) if style_skill_init else ""
+        brand_init = {**brand, "_style_context": style_ctx_init} if style_ctx_init else brand
+        prompts = groq_ai.generate_brand_consistent_prompts(description, count=count, brand=brand_init)
         gen = image_gen.generate_images(prompts, content_type="carousel", **ref_kwargs)
         if gen.get("ok"):
             slide_urls = _gen_and_stamp(gen["urls"], "initial_carousel")
             if slide_urls:
-                caption = groq_ai.generate_caption(description, "carousel", website_url=session.website_url or "")
+                caption = groq_ai.generate_caption_with_style(description, "carousel",
+                    website_url=session.website_url or "", style_skill=style_skill_init)
                 db.log_post(phone_number=phone, content_type="carousel",
                             image_urls=slide_urls, caption=caption, prompts=prompts, status="draft")
                 queue.append({"content_type": "carousel", "image_urls": slide_urls, "caption": caption})
@@ -1198,6 +1212,108 @@ def _generate_initial_content_bg(phone: str) -> None:
                         )})
     time.sleep(1)
     _send_initial_content_item(phone, session, 0)
+
+
+def _scrape_reference_images_bg(phone: str, url: str) -> None:
+    """Scrape images from a reference URL, upload to S3, send numbered choices to user."""
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+    try:
+        from tools.image_scraper import scrape_images
+        _send_async(phone, {"kind": "text", "text": "🔍 Fetching images from that link — one moment..."})
+
+        raw_urls = scrape_images(url)
+        if not raw_urls:
+            _send_async(phone, {
+                "kind": "text",
+                "text": (
+                    "😕 I couldn't pull images from that link (the page may be private or blocked).\n\n"
+                    "You can:\n"
+                    "• Try a different URL\n"
+                    "• Send me an image directly\n"
+                    "• Type *skip* to continue"
+                )
+            })
+            return
+
+        # Upload to S3 so they never expire
+        s3_urls: list[str] = []
+        for raw in raw_urls[:8]:
+            try:
+                resp = __import__("requests").get(raw, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                ct = resp.headers.get("content-type", "image/jpeg")
+                ext = ct.split("/")[-1].split(";")[0].strip() or "jpg"
+                upload = aws_storage.upload_bytes(
+                    resp.content,
+                    content_type=ct,
+                    extension=ext,
+                    folder="reference_images",
+                )
+                s3_urls.append(upload["s3_url"])
+            except Exception as e:
+                _logger.debug("failed to re-host %s: %s", raw, e)
+
+        if not s3_urls:
+            _send_async(phone, {
+                "kind": "text",
+                "text": "😕 Couldn't load those images. Try a different link or type *skip*."
+            })
+            return
+
+        session = get_session(phone)
+        session.scraped_reference_images = s3_urls
+        save_session(session)
+
+        # Send images one by one with numbers
+        _send_async(phone, {
+            "kind": "text",
+            "text": (
+                f"✨ Found *{len(s3_urls)} image(s)* from that page. Sending them now..."
+            )
+        })
+        for i, img_url in enumerate(s3_urls, 1):
+            _send_async(phone, {
+                "kind": "media",
+                "text": f"*{i}*",
+                "media_url": img_url,
+            })
+            time.sleep(0.5)
+
+        _send_async(phone, {
+            "kind": "text",
+            "text": (
+                f"Which image(s) do you like? Reply with the number(s), e.g. *1* or *1 3*.\n"
+                f"_(minimum 1, or type *skip* to continue without a reference)_"
+            )
+        })
+    except Exception as exc:
+        _logger.warning("_scrape_reference_images_bg failed: %s", exc)
+        _send_async(phone, {
+            "kind": "text",
+            "text": "😕 Couldn't load that page. Try a different URL or type *skip*."
+        })
+
+
+def _analyze_style_skill_bg(phone: str, image_url: str) -> None:
+    """
+    Background task: run VLM style fingerprinting on the user's reference image,
+    store the result in MongoDB, and cache it on the session.
+    Sends no WhatsApp message — runs silently.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+    try:
+        result = groq_ai.analyze_post_style(image_url)
+        skill = result.get("skill", {})
+        summary = result.get("summary", "")
+        db.save_post_style_skill(phone, skill, summary)
+        session = get_session(phone)
+        session.post_style_skill = skill
+        save_session(session)
+        _logger.info("style skill stored for %s: %s", phone, summary)
+    except Exception as exc:
+        _logger.warning("_analyze_style_skill_bg failed for %s: %s", phone, exc)
 
 
 def _generate_calendar_bg(phone: str) -> None:
@@ -1438,7 +1554,9 @@ def handle_incoming_message(
                     "• Reply *yes* to continue\n"
                     "• Or type any corrections and I'll use that instead"
                 )
-                _send_async(phone, {"kind": "text", "text": confirm_text}, tts=True)
+                # Transcription confirmation is always TEXT — user needs to read & confirm.
+                # TTS kicks in AFTER confirmation when sub-agents respond.
+                _send_async(phone, {"kind": "text", "text": confirm_text}, tts=False)
                 return {"kind": "none"}
             else:
                 return _voice_reply(phone,
@@ -1468,6 +1586,7 @@ def handle_incoming_message(
         session.voice_pending_transcript = None
         session.voice_pre_step = None
         session.step = pre_step
+        session._voice_just_confirmed = True  # harness/sub-agents will use TTS this turn
         # Now extract intent from the confirmed text and apply to session
         clean  = effective_text
         choice = effective_text.lower().strip()
@@ -1483,12 +1602,50 @@ def handle_incoming_message(
                         if session.step == prev:
                             break
         save_session(session)
-        # Fall through to the normal step handlers below with effective_text as clean/choice
+        # Fall through to harness / normal step handlers below
 
-    # ── Smart intent intercept ─────────────────────────────────────────────
-    # If the user is onboarded and sends a message (text and/or image) that
-    # clearly expresses a creation intent, skip straight to the right step
-    # instead of forcing them through a menu.
+    # ══════════════════════════════════════════════════════════════════════
+    # ── HARNESS — routes all post-onboarding messages intelligently ────────
+    # For verified + onboarded users whose step is a harness-owned step OR
+    # whose step is STEP_CHOOSE_CONTENT_TYPE (the legacy entry point),
+    # we skip the old template flow entirely and let the harness + sub-agents handle it.
+    # Legacy STEP_REEL_* steps still go through the original handlers below.
+    # ══════════════════════════════════════════════════════════════════════
+    _HARNESS_STEPS = {
+        STEP_CHOOSE_CONTENT_TYPE,
+        STEP_AGENT_COLLECTING,
+        STEP_AGENT_IMAGE_POST,
+        STEP_AGENT_CAROUSEL,
+        STEP_AGENT_REEL,
+    }
+    _VOICE_CONFIRMED_THIS_TURN = (
+        session.step == STEP_VOICE_CONFIRM  # was voice_confirm just now — but we already cleared it above
+    )
+    if session.onboarding_complete and session.step in _HARNESS_STEPS:
+        from agents import harness as _harness
+        _audio_transcript = (
+            session.voice_pending_transcript  # already cleared above but capture before it was cleared
+            if False  # we've already applied the transcript to `clean` above
+            else None
+        )
+        # voice_confirmed=True when user just confirmed a transcription → sub-agents use TTS
+        _voice_ok = getattr(session, "_voice_just_confirmed", False)
+        # clear the flag so it doesn't persist across messages
+        if _voice_ok:
+            session._voice_just_confirmed = False
+        return _harness.route(
+            phone=phone,
+            session=session,
+            body=clean,
+            button_payload=button_payload,
+            media_urls=media_urls,
+            media_types=media_types,
+            audio_transcript=None,  # already merged into clean above via voice confirm flow
+            voice_confirmed=_voice_ok,
+        )
+
+    # ── (Legacy) Smart intent intercept for non-harness-owned steps ────────
+    # Kept for backward compat for users mid-flow in old steps.
     _INTENT_ELIGIBLE_STEPS = {
         STEP_CHOOSE_CONTENT_TYPE,
         STEP_COLLECT_DESCRIPTION,
@@ -1743,12 +1900,72 @@ def handle_incoming_message(
     if session.step == STEP_ONBOARDING_REFERENCE:
         if "skip" in choice:
             session.reference_content_url = None
-        else:
-            session.reference_content_url = clean
+            session.step = STEP_ONBOARDING_COMPETITORS
+            save_session(session)
+            return {"kind": "text",
+                    "text": (
+                        "Who are your top 2–3 competitors? Instagram handles or website URLs work.\n"
+                        "(Separate with commas, or type *skip*)"
+                    )}
+
+        # Detect if user pasted a URL — scrape images from it
+        url_match = re.search(r'https?://\S+', clean)
+        if url_match:
+            url = url_match.group(0)
+            session.reference_content_url = url
+            session.step = STEP_ONBOARDING_REFERENCE_SELECT
+            save_session(session)
+            threading.Thread(
+                target=_scrape_reference_images_bg,
+                args=(phone, url),
+                daemon=True,
+            ).start()
+            return {"kind": "none"}
+
+        # Not a URL — treat as a description/note, skip scraping
+        session.reference_content_url = clean
         session.step = STEP_ONBOARDING_COMPETITORS
         save_session(session)
         return {"kind": "text",
                 "text": (
+                    "Who are your top 2–3 competitors? Instagram handles or website URLs work.\n"
+                    "(Separate with commas, or type *skip*)"
+                )}
+
+    # STEP: onboarding_reference_select
+    if session.step == STEP_ONBOARDING_REFERENCE_SELECT:
+        scraped = getattr(session, "scraped_reference_images", []) or []
+
+        if "skip" in choice or not scraped:
+            session.step = STEP_ONBOARDING_COMPETITORS
+            save_session(session)
+            return {"kind": "text",
+                    "text": (
+                        "Who are your top 2–3 competitors? Instagram handles or website URLs work.\n"
+                        "(Separate with commas, or type *skip*)"
+                    )}
+
+        # Parse numbers like "1", "1 3", "1,3"
+        nums = [int(n) for n in re.findall(r'\d+', clean) if 1 <= int(n) <= len(scraped)]
+        if not nums:
+            return {"kind": "text",
+                    "text": f"Reply with the number(s) of the image(s) you like (e.g. *1* or *1 3*), or *skip*."}
+
+        selected_urls = [scraped[i - 1] for i in nums]
+        session.reference_image_url = selected_urls[0]  # primary — used by art director
+        session.scraped_reference_images = selected_urls
+        session.step = STEP_ONBOARDING_COMPETITORS
+        save_session(session)
+        # Fire style analysis in background — stores skill quietly
+        threading.Thread(
+            target=_analyze_style_skill_bg,
+            args=(phone, selected_urls[0]),
+            daemon=True,
+        ).start()
+        return {"kind": "text",
+                "text": (
+                    f"✅ Got it — saved {len(selected_urls)} reference image(s).\n"
+                    f"🎨 Analyzing your style in the background...\n\n"
                     "Who are your top 2–3 competitors? Instagram handles or website URLs work.\n"
                     "(Separate with commas, or type *skip*)"
                 )}
@@ -2961,10 +3178,12 @@ def handle_incoming_message(
 def _generate_caption_and_ask_publish_bg(phone: str) -> None:
     session = get_session(phone)
     try:
-        caption = groq_ai.generate_caption(
+        style_skill = session.post_style_skill or db.get_post_style_skill(phone)
+        caption = groq_ai.generate_caption_with_style(
             session.description or "",
             session.content_type or "image_post",
             website_url=session.website_url or "",
+            style_skill=style_skill,
         )
         session.caption = caption
         save_session(session)

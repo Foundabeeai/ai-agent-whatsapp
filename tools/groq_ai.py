@@ -37,6 +37,7 @@ def generate_image_prompts(description: str, count: int = 1, brand: dict | None 
     brand_name    = brand.get("brand_name", "")
     brand_colors  = brand.get("brand_colors", "")
     brand_voice   = brand.get("brand_voice", "")
+    style_ctx     = brand.get("_style_context", "")  # injected from user's style skill
     location_hint = ""  # will be extracted from description if present
 
     brand_context = ""
@@ -46,6 +47,8 @@ def generate_image_prompts(description: str, count: int = 1, brand: dict | None 
         brand_context += f"Brand colors: {brand_colors}. "
     if brand_voice:
         brand_context += f"Visual tone: {brand_voice}. "
+    if style_ctx:
+        brand_context += f"\n\n{style_ctx}\n"
 
     system = (
         "You are an expert commercial photography and AI image prompt engineer. "
@@ -98,12 +101,15 @@ def generate_brand_consistent_prompts(description: str, count: int, brand: dict)
         "Output ONLY the prompts, one per line, in story order. Do NOT number them."
     )
 
+    style_ctx = brand.get("_style_context", "")
     brand_ctx = (
         f"Brand: {brand.get('brand_name') or 'the brand'}\n"
         f"Tone/voice: {brand.get('brand_voice') or 'professional'}\n"
         f"Brand colors: {brand.get('brand_colors') or 'derive elegant colors from context'}\n"
         f"Brand description: {brand.get('brand_description') or ''}\n"
     )
+    if style_ctx:
+        brand_ctx += f"\n{style_ctx}\n"
 
     positions_text = "\n".join(f"  Slide {i+1}: {p}" for i, p in enumerate(positions))
 
@@ -581,6 +587,170 @@ def get_timezone_for_location(location: str) -> str | None:
     return raw
 
 
+def extract_full_intent(
+    text_body: str,
+    audio_transcript: str | None,
+    has_image: bool,
+    has_video: bool,
+    session_context: dict,
+) -> dict:
+    """
+    One-shot intent extraction from any combination of text, audio transcript,
+    and media signals. Returns a structured intent dict that the harness uses
+    to route to a sub-agent with minimal follow-up questions.
+
+    session_context keys: brand_name, brand_description, brand_voice,
+                          has_style_skill, recent_content_types, social_goal
+
+    Returns:
+    {
+      "content_type":        "image_post" | "carousel" | "reel" | "unknown",
+      "confidence":          0.0-1.0,
+      "description":         str — clean subject/topic (no request framing),
+      "count":               int — number of images/slides (default 1),
+      "reel_type":           "cinematic" | "ugc" | "ad" | null,
+      "use_reference_image": bool — user wants attached image as product base,
+      "use_style_skill":     bool — user wants to replicate their stored style,
+      "publish_action":      "now" | "schedule" | null,
+      "scheduled_at":        str | null,
+      "style_notes":         str — any aesthetic requests ("dark", "minimal", "vibrant"),
+      "missing_fields":      list[str] — critical fields still needed,
+      "smart_question":      str — ONE conversational question covering all missing fields,
+      "ready_to_generate":   bool — true if enough info to start generation now,
+    }
+    """
+    import json as _json
+    import re as _re
+
+    combined_text = ""
+    if text_body and text_body.strip():
+        combined_text += f"Text message: {text_body.strip()}\n"
+    if audio_transcript and audio_transcript.strip():
+        combined_text += f"Voice message (transcribed): {audio_transcript.strip()}\n"
+    if not combined_text.strip():
+        combined_text = "(no text — user sent media only)"
+
+    media_signals = []
+    if has_image:
+        media_signals.append("image attached")
+    if has_video:
+        media_signals.append("video attached")
+
+    brand_ctx = (
+        f"Brand: {session_context.get('brand_name') or 'unknown'}\n"
+        f"Business: {session_context.get('brand_description') or ''}\n"
+        f"Brand voice: {session_context.get('brand_voice') or ''}\n"
+        f"Goal: {session_context.get('social_goal') or ''}\n"
+        f"User has stored style skill: {session_context.get('has_style_skill', False)}\n"
+        f"Recent content types created: {session_context.get('recent_content_types') or 'none yet'}\n"
+    )
+
+    system = (
+        "You are the intelligent routing brain of BeeQ, a WhatsApp social media agent. "
+        "A verified business user has sent a message. Extract their FULL intent in one shot.\n\n"
+
+        "═══ INFERENCE RULES ═══\n"
+        "content_type:\n"
+        "  - Image attached + no explicit type → 'image_post'\n"
+        "  - 'carousel' / 'slides' / 'tips' / 'steps' / 'list' → 'carousel'\n"
+        "  - 'reel' / 'video' / 'clip' / 'short' → 'reel'\n"
+        "  - 'post' / 'image' / 'photo' alone → 'image_post'\n"
+        "  - Unclear → 'unknown'\n\n"
+
+        "reel_type:\n"
+        "  - 'cinematic' / 'product video' / 'product reel' → 'cinematic'\n"
+        "  - 'ugc' / 'talking head' / 'my face' / 'selfie video' → 'ugc'\n"
+        "  - 'ad' / 'advertisement' → 'ad'\n"
+        "  - Not specified for reel → null (will ask)\n\n"
+
+        "use_reference_image:\n"
+        "  - Image is attached AND user wants a post made FROM it → true\n"
+        "  - Image is for style reference only → false (set use_style_skill=true)\n"
+        "  - No image → false\n\n"
+
+        "use_style_skill:\n"
+        "  - 'like my previous posts' / 'same style' / 'based on my usual' / "
+        "    'how I usually post' / 'match my style' → true\n"
+        "  - User has stored style skill AND no explicit different style requested → true by default\n\n"
+
+        "description: REMOVE all request framing. Keep only the subject.\n"
+        "  - 'Can you make a cool post about my new coffee blend?' → 'new coffee blend launch'\n"
+        "  - 'Create a carousel on 5 skincare tips' → '5 skincare tips'\n\n"
+
+        "missing_fields: ONLY list fields that are TRULY needed and NOT inferable:\n"
+        "  - For image_post: need 'description' if not clear. 'publish_action' is optional.\n"
+        "  - For carousel: need 'description'. 'count' defaults to 3 if not given.\n"
+        "  - For reel: need 'reel_type' if not clear. 'description' required.\n"
+        "  - NEVER ask for things already known from brand context or session.\n\n"
+
+        "ready_to_generate:\n"
+        "  - true if content_type is known AND description is clear\n"
+        "  - For reel: also need reel_type\n"
+        "  - publish_action being missing does NOT block generation\n\n"
+
+        "smart_question: ONE short, warm, conversational question covering ALL missing fields.\n"
+        "  - Do NOT list multiple questions. Merge them into one natural sentence.\n"
+        "  - Sound like a creative collaborator, not a form.\n\n"
+
+        "Output ONLY valid JSON. No markdown. No extra keys."
+    )
+
+    user = (
+        f"{brand_ctx}\n"
+        f"Media signals: {', '.join(media_signals) if media_signals else 'none'}\n\n"
+        f"User message:\n{combined_text}\n\n"
+        "Extract full intent and return JSON."
+    )
+
+    schema = (
+        '{"content_type":"image_post","confidence":0.9,"description":"...","count":1,'
+        '"reel_type":null,"use_reference_image":true,"use_style_skill":true,'
+        '"publish_action":null,"scheduled_at":null,"style_notes":"...","missing_fields":[],'
+        '"smart_question":"...","ready_to_generate":true}'
+    )
+
+    raw = _chat(system + f"\n\nSchema: {schema}", user, temperature=0.15, max_tokens=512)
+    try:
+        clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+        data = _json.loads(clean)
+        # Ensure required keys with safe defaults
+        return {
+            "content_type":        str(data.get("content_type") or "unknown"),
+            "confidence":          float(data.get("confidence") or 0.5),
+            "description":         str(data.get("description") or "").strip(),
+            "count":               int(data.get("count") or 1),
+            "reel_type":           data.get("reel_type"),
+            "use_reference_image": bool(data.get("use_reference_image", has_image)),
+            "use_style_skill":     bool(data.get("use_style_skill", True)),
+            "publish_action":      data.get("publish_action"),
+            "scheduled_at":        data.get("scheduled_at"),
+            "style_notes":         str(data.get("style_notes") or ""),
+            "missing_fields":      list(data.get("missing_fields") or []),
+            "smart_question":      str(data.get("smart_question") or "What would you like to create?"),
+            "ready_to_generate":   bool(data.get("ready_to_generate", False)),
+        }
+    except Exception:
+        # Safe fallback
+        ct = "image_post" if has_image else "unknown"
+        desc = (audio_transcript or text_body or "").strip()
+        missing = [] if (ct != "unknown" and desc) else ["description"] if ct != "unknown" else ["content_type"]
+        return {
+            "content_type": ct,
+            "confidence": 0.4,
+            "description": desc,
+            "count": 1,
+            "reel_type": None,
+            "use_reference_image": has_image,
+            "use_style_skill": session_context.get("has_style_skill", False),
+            "publish_action": None,
+            "scheduled_at": None,
+            "style_notes": "",
+            "missing_fields": missing,
+            "smart_question": "What would you like to create today? 🐝",
+            "ready_to_generate": ct != "unknown" and bool(desc),
+        }
+
+
 def understand_intent(user_message: str, context: str = "") -> str:
     """
     Use Groq to understand free-form user messages and normalize intent.
@@ -676,6 +846,303 @@ Return ONLY valid JSON. Example:
     except Exception:
         pass
     return {}
+
+
+def analyze_post_style(image_url: str) -> dict:
+    """
+    Two-step style fingerprinting pipeline.
+
+    Step 1 — Vision: Qwen deeply analyzes a reference social media post/graphic for
+    every visual and copy design decision it can observe.
+
+    Step 2 — LLM: GPT-OSS distills the observation into a structured style skill JSON
+    that can be injected verbatim into future image + caption prompts to replicate the look.
+
+    Returns a dict with two top-level keys:
+      "skill"  — the structured style JSON (stored in MongoDB, injected into prompts)
+      "summary" — 1-2 sentence human-readable description of the style
+    """
+    import json as _json
+    import re as _re
+
+    # ── Step 1: Vision analysis — observe every design detail ───────────────
+    try:
+        vision_resp = _client().chat.completions.create(
+            model=config.GROQ_VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": (
+                        "You are a senior graphic designer and social media art director. "
+                        "Analyze every visual and copy design decision in this post/image with extreme precision.\n\n"
+                        "Examine and describe:\n"
+                        "1. TEXT PLACEMENT — where is text positioned? (top-center, bottom-left, overlay-center, etc.) "
+                        "Is there a headline? Where exactly? Body text? Caption area?\n"
+                        "2. TYPOGRAPHY — font weight (bold/regular/light), apparent font style "
+                        "(serif/sans-serif/script), text size hierarchy (large headline vs small body), "
+                        "letter spacing (tight/normal/wide), text color and any outline or shadow effects.\n"
+                        "3. PROFILE BADGE / BRANDING ELEMENT — is there a profile avatar, logo watermark, "
+                        "username handle, or brand badge visible? If yes: exact position, size (small/medium/large), "
+                        "shape (circular/rectangular), border/ring color if any.\n"
+                        "4. COLOR PALETTE — list the 2-4 dominant colors (describe them precisely: "
+                        "'deep navy #1a2b4c', 'warm cream', 'neon yellow'). What is the background color/treatment? "
+                        "What are the text colors? Any gradient?\n"
+                        "5. COMPOSITION & LAYOUT — where is the main subject/product placed? "
+                        "(center, left-third, full-bleed, top-half) How much negative/white space? "
+                        "Is there an overlay (dark gradient, frosted glass, color wash, none)?\n"
+                        "6. BACKGROUND STYLE — solid color, gradient, textured, photographic, environmental, "
+                        "abstract, pattern? Describe it.\n"
+                        "7. VISUAL MOOD & AESTHETIC — what overall aesthetic does this communicate? "
+                        "(luxury minimalist, bold vibrant, editorial clean, warm lifestyle, dark & moody, etc.)\n"
+                        "8. CAPTION/COPY STYLE — if visible: tone (professional/casual/excited), "
+                        "emoji usage (none/light/heavy), hashtag placement (inline/end-grouped/none), "
+                        "CTA style (direct/soft/question).\n\n"
+                        "Be extremely precise. Use exact position descriptions. "
+                        "This analysis will be used to replicate this exact style for future posts."
+                    )},
+                ],
+            }],
+            temperature=0.4,
+            max_completion_tokens=900,
+            top_p=0.95,
+            reasoning_effort="default",
+            stop=None,
+        )
+        vision_analysis = (vision_resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        vision_analysis = "A social media post with standard layout, sans-serif text, centered subject, and clean background."
+
+    # ── Step 2: Distill into a reusable style skill JSON ────────────────────
+    system = (
+        "You are a design systems expert. Your job is to convert a visual analysis "
+        "of a social media post into a precise, structured style skill JSON "
+        "that a graphic designer could follow to exactly replicate the style.\n\n"
+        "Output ONLY valid JSON matching this schema exactly (no extra keys, no markdown):\n"
+        "{\n"
+        '  "layout": {\n'
+        '    "text_placement": "string — e.g. bottom-center, top-left, overlay-center",\n'
+        '    "headline_zone": "string — where the main headline sits, e.g. upper-third centered",\n'
+        '    "body_zone": "string — where supporting text sits, or null if none",\n'
+        '    "subject_position": "string — where the main visual subject sits",\n'
+        '    "negative_space": "minimal | moderate | generous",\n'
+        '    "overlay": "none | dark-gradient | frosted-glass | color-wash | vignette"\n'
+        "  },\n"
+        '  "typography": {\n'
+        '    "font_style": "sans-serif | serif | script | bold-display | mixed",\n'
+        '    "headline_weight": "light | regular | semibold | bold | black/extra-bold",\n'
+        '    "headline_size": "small | medium | large | very-large",\n'
+        '    "letter_spacing": "tight | normal | wide | very-wide",\n'
+        '    "text_color_primary": "string — hex or description",\n'
+        '    "text_color_secondary": "string — hex or description, or null",\n'
+        '    "text_effects": "none | drop-shadow | outline | glow | uppercase-all | mixed-case"\n'
+        "  },\n"
+        '  "badge": {\n'
+        '    "present": true | false,\n'
+        '    "type": "profile-avatar | logo-watermark | username-handle | brand-stamp | null",\n'
+        '    "position": "string — e.g. bottom-right, top-left, or null",\n'
+        '    "size": "small | medium | large | null",\n'
+        '    "shape": "circular | rounded-rect | rectangular | null",\n'
+        '    "border_color": "string — color or null"\n'
+        "  },\n"
+        '  "colors": {\n'
+        '    "palette": ["string", "string"],\n'
+        '    "background": "string — color or treatment description",\n'
+        '    "background_type": "solid | gradient | photographic | textured | abstract",\n'
+        '    "accent": "string — color used for highlights, buttons, or emphasis",\n'
+        '    "mood": "string — warm / cool / neutral / high-contrast / pastel / dark"\n'
+        "  },\n"
+        '  "composition": {\n'
+        '    "style": "string — e.g. luxury-minimalist, bold-editorial, warm-lifestyle, dark-moody",\n'
+        '    "framing": "centered | rule-of-thirds-left | rule-of-thirds-right | full-bleed | flat-lay",\n'
+        '    "depth": "flat-2d | shallow-dof | deep-focus"\n'
+        "  },\n"
+        '  "caption_style": {\n'
+        '    "tone": "professional | casual | excited | inspirational | minimal | humorous",\n'
+        '    "emoji_density": "none | light (1-2) | moderate (3-5) | heavy (6+)",\n'
+        '    "hashtag_placement": "inline | end-grouped | none",\n'
+        '    "hashtag_count": "none | few (1-3) | moderate (4-7) | many (8+)",\n'
+        '    "cta_style": "direct-command | soft-invite | question | none"\n'
+        "  },\n"
+        '  "summary": "string — 1-2 sentence description of the overall style for a human designer"\n'
+        "}"
+    )
+
+    raw = _chat(system, f"Visual analysis:\n{vision_analysis}", temperature=0.2, max_tokens=900)
+    try:
+        clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`").strip()
+        data = _json.loads(clean)
+        summary = data.pop("summary", "A clean, well-composed social media post style.")
+        return {"skill": data, "summary": summary}
+    except Exception:
+        # Return a minimal safe default
+        return {
+            "skill": {
+                "layout": {"text_placement": "bottom-center", "headline_zone": "upper-third centered",
+                           "body_zone": None, "subject_position": "center", "negative_space": "moderate",
+                           "overlay": "none"},
+                "typography": {"font_style": "sans-serif", "headline_weight": "bold",
+                               "headline_size": "large", "letter_spacing": "normal",
+                               "text_color_primary": "#ffffff", "text_color_secondary": None,
+                               "text_effects": "none"},
+                "badge": {"present": False, "type": None, "position": None, "size": None,
+                          "shape": None, "border_color": None},
+                "colors": {"palette": ["#1a1a1a", "#ffffff"], "background": "dark solid",
+                           "background_type": "solid", "accent": "#f59e0b", "mood": "neutral"},
+                "composition": {"style": "clean editorial", "framing": "centered", "depth": "flat-2d"},
+                "caption_style": {"tone": "professional", "emoji_density": "light (1-2)",
+                                  "hashtag_placement": "end-grouped", "hashtag_count": "few (1-3)",
+                                  "cta_style": "soft-invite"},
+            },
+            "summary": "Clean, professional social media post with centered layout.",
+        }
+
+
+def style_skill_to_prompt_context(skill: dict) -> str:
+    """
+    Convert a stored style skill dict into a concise natural-language block
+    that can be prepended to any image prompt or caption system prompt.
+    """
+    if not skill:
+        return ""
+
+    layout = skill.get("layout", {})
+    typo = skill.get("typography", {})
+    badge = skill.get("badge", {})
+    colors = skill.get("colors", {})
+    comp = skill.get("composition", {})
+    caption = skill.get("caption_style", {})
+
+    lines = ["═══ USER STYLE SKILL (replicate this exactly) ═══"]
+
+    # Layout
+    tp = layout.get("text_placement", "")
+    if tp:
+        lines.append(f"• Text placement: {tp}")
+    hl = layout.get("headline_zone", "")
+    if hl:
+        lines.append(f"• Headline zone: {hl}")
+    sp = layout.get("subject_position", "")
+    if sp:
+        lines.append(f"• Subject position: {sp}")
+    ov = layout.get("overlay", "none")
+    if ov and ov != "none":
+        lines.append(f"• Overlay: {ov}")
+    ns = layout.get("negative_space", "")
+    if ns:
+        lines.append(f"• Negative space: {ns}")
+
+    # Typography
+    fw = typo.get("headline_weight", "")
+    fs = typo.get("font_style", "")
+    hs = typo.get("headline_size", "")
+    te = typo.get("text_effects", "none")
+    ls = typo.get("letter_spacing", "")
+    tc = typo.get("text_color_primary", "")
+    typo_parts = [x for x in [f"{fw} {fs}".strip(), f"{hs} size" if hs else "", f"{ls} letter-spacing" if ls else ""] if x.strip()]
+    if typo_parts:
+        lines.append(f"• Typography: {', '.join(typo_parts)}")
+    if tc:
+        lines.append(f"• Text color: {tc}")
+    if te and te != "none":
+        lines.append(f"• Text effects: {te}")
+
+    # Badge
+    if badge.get("present"):
+        btype = badge.get("type", "badge")
+        bpos = badge.get("position", "")
+        bsize = badge.get("size", "")
+        bshape = badge.get("shape", "")
+        bborder = badge.get("border_color", "")
+        badge_desc = f"• Profile badge: {btype}"
+        details = [x for x in [bpos, bsize, bshape, f"border {bborder}" if bborder else ""] if x]
+        if details:
+            badge_desc += f" — {', '.join(details)}"
+        lines.append(badge_desc)
+    else:
+        lines.append("• No profile badge/watermark")
+
+    # Colors
+    palette = colors.get("palette", [])
+    bg = colors.get("background", "")
+    bgt = colors.get("background_type", "")
+    accent = colors.get("accent", "")
+    mood = colors.get("mood", "")
+    if palette:
+        lines.append(f"• Color palette: {', '.join(palette)}")
+    if bg:
+        lines.append(f"• Background: {bg} ({bgt})" if bgt else f"• Background: {bg}")
+    if accent:
+        lines.append(f"• Accent color: {accent}")
+    if mood:
+        lines.append(f"• Color mood: {mood}")
+
+    # Composition
+    cstyle = comp.get("style", "")
+    framing = comp.get("framing", "")
+    depth = comp.get("depth", "")
+    comp_parts = [x for x in [cstyle, framing, depth] if x]
+    if comp_parts:
+        lines.append(f"• Composition: {', '.join(comp_parts)}")
+
+    # Caption
+    tone = caption.get("tone", "")
+    emojis = caption.get("emoji_density", "")
+    htag_place = caption.get("hashtag_placement", "")
+    htag_count = caption.get("hashtag_count", "")
+    cta = caption.get("cta_style", "")
+    if tone:
+        lines.append(f"• Caption tone: {tone}")
+    if emojis:
+        lines.append(f"• Emoji usage: {emojis}")
+    if htag_place and htag_count:
+        lines.append(f"• Hashtags: {htag_count}, {htag_place}")
+    if cta:
+        lines.append(f"• CTA style: {cta}")
+
+    lines.append("═══════════════════════════════════════════════")
+    return "\n".join(lines)
+
+
+def generate_caption_with_style(
+    description: str,
+    content_type: str,
+    website_url: str = "",
+    style_skill: dict | None = None,
+) -> str:
+    """
+    Generate a caption that mirrors the user's stored style skill if available,
+    otherwise falls back to the standard caption generator.
+    """
+    if not style_skill:
+        return generate_caption(description, content_type, website_url)
+
+    style_context = style_skill_to_prompt_context(style_skill)
+    cap_style = style_skill.get("caption_style", {})
+    tone = cap_style.get("tone", "professional")
+    emojis = cap_style.get("emoji_density", "light (1-2)")
+    htag_place = cap_style.get("hashtag_placement", "end-grouped")
+    htag_count = cap_style.get("hashtag_count", "few (1-3)")
+    cta = cap_style.get("cta_style", "soft-invite")
+
+    link_instruction = (
+        f"\nInclude this link naturally near the end: {website_url}"
+        if website_url else ""
+    )
+
+    system = (
+        f"{style_context}\n\n"
+        "You are a social media copywriter. Write a caption that EXACTLY matches the style skill above.\n"
+        f"Tone: {tone}. Emoji usage: {emojis}. Hashtags: {htag_count}, placed {htag_place}. CTA style: {cta}."
+        + link_instruction +
+        "\nOutput ONLY the caption text, nothing else."
+    )
+    user = (
+        f"Content type: {content_type}\n"
+        f"Content description: {description}\n"
+        "Write the caption matching the style skill exactly."
+    )
+    return _chat(system, user, temperature=0.75)
 
 
 def analyze_product_image(image_url: str) -> str:

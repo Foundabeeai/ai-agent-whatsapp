@@ -61,6 +61,7 @@ def _ensure_indexes(db: Database) -> None:
     db.posts.create_index([("phone_number", 1), ("status", 1), ("content_type", 1)])
     db.content_calendars.create_index([("phone_number", 1)], unique=True)
     db.content_calendars.create_index([("token", 1)], unique=True)
+    db.post_style_skills.create_index([("phone_number", 1)], unique=True)
 
 
 def log_inbound(phone_number: str, text: str, media_urls: list[str] | None = None) -> None:
@@ -435,6 +436,36 @@ def get_content_calendar(phone_number: str) -> dict | None:
         if doc:
             doc.pop("_id", None)
         return doc
+    except Exception:
+        return None
+
+
+def save_post_style_skill(phone_number: str, skill: dict, summary: str = "") -> None:
+    """Persist a user's post style skill (derived from their reference image)."""
+    try:
+        db = get_db()
+        db.post_style_skills.update_one(
+            {"phone_number": phone_number},
+            {"$set": {
+                "phone_number": phone_number,
+                "skill": skill,
+                "summary": summary,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
+
+def get_post_style_skill(phone_number: str) -> dict | None:
+    """Retrieve the stored style skill for a phone number. Returns None if not set."""
+    try:
+        db = get_db()
+        doc = db.post_style_skills.find_one({"phone_number": phone_number})
+        if doc:
+            return doc.get("skill")
+        return None
     except Exception:
         return None
 

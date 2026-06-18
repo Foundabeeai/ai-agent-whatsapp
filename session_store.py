@@ -32,6 +32,7 @@ STEP_ONBOARDING_VOICE = "onboarding_voice"
 STEP_ONBOARDING_VOICE_CUSTOM = "onboarding_voice_custom"
 STEP_ONBOARDING_COLORS = "onboarding_colors"
 STEP_ONBOARDING_REFERENCE = "onboarding_reference"
+STEP_ONBOARDING_REFERENCE_SELECT = "onboarding_reference_select"  # user picks from scraped images
 STEP_ONBOARDING_COMPETITORS = "onboarding_competitors"
 STEP_ONBOARDING_ASSETS = "onboarding_assets"
 STEP_ONBOARDING_SCHEDULE = "onboarding_schedule"
@@ -63,6 +64,12 @@ STEP_REEL_APPROVAL            = "reel_approval"             # approve / regenera
 # Daily proactive suggestion steps
 STEP_DAILY_SUGGESTION         = "daily_suggestion"          # user reviewing today's auto-generated content
 STEP_DAILY_SUGGESTION_PUBLISH = "daily_suggestion_publish"  # awaiting schedule time after approval
+
+# Harness + sub-agent steps
+STEP_AGENT_COLLECTING         = "agent_collecting"          # harness waiting for one missing field
+STEP_AGENT_IMAGE_POST         = "agent_image_post"          # inside image post sub-agent
+STEP_AGENT_CAROUSEL           = "agent_carousel"            # inside carousel sub-agent
+STEP_AGENT_REEL               = "agent_reel"                # inside reel sub-agent
 
 # Monthly content limits
 MONTHLY_LIMITS = {"image_post": 10, "carousel": 8, "reel": 12}
@@ -108,6 +115,12 @@ class UserSession:
     # Content creation
     content_type: Optional[str] = None       # image_post | carousel | reel
     reference_image_url: Optional[str] = None  # S3 URL of product image uploaded by user
+    scraped_reference_images: list = field(default_factory=list)  # S3 URLs from URL scrape
+    post_style_skill: Optional[dict] = None  # VLM-derived style fingerprint from reference image
+
+    # Harness / sub-agent state
+    agent_intent: Optional[dict] = None        # full extracted intent dict while in a sub-agent
+    agent_missing_field: Optional[str] = None  # field harness is currently asking about
     description: Optional[str] = None
     image_count: int = 1
     image_prompts: list[str] = field(default_factory=list)
