@@ -706,6 +706,15 @@ def _resolve_instagram_bg(phone: str, handle: str) -> None:
                             "text": f"@{username} connected ✓\n\n{beeq('ask_content_type')}"})
         time.sleep(0.5)
         send_content_type_menu(phone)
+        # Send calendar link if one exists
+        cal = db.get_content_calendar(phone)
+        if cal and cal.get("url"):
+            time.sleep(1)
+            _send_async(phone, {"kind": "text",
+                                "text": (
+                                    f"📅 *Your content calendar:*\n{cal['url']}\n\n"
+                                    "_View upcoming posts, approve or skip days._"
+                                )})
 
 
 def _generate_and_notify_bg(phone: str) -> None:
