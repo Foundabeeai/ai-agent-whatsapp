@@ -37,7 +37,7 @@ WA_SID_IMAGE_COUNT = _get("WA_SID_IMAGE_COUNT")         # 1 / 3 / 5 images (caro
 
 # Groq
 GROQ_API_KEY = _get("GROQ_API_KEY")
-GROQ_MODEL = _get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = _get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # Replicate
 REPLICATE_API_TOKEN = _get("REPLICATE_API_TOKEN")
@@ -89,7 +89,7 @@ AVATAR_MAYA_URL   = _get("AVATAR_MAYA_URL",   "").split("?")[0]
 AVATAR_GEORGE_URL = _get("AVATAR_GEORGE_URL", "").split("?")[0]
 
 # Groq vision model for product image analysis
-GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 
 # App
 PORT = _get_int("PORT", 5000)

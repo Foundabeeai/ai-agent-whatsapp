@@ -11,7 +11,7 @@ def _client() -> Groq:
     return Groq(api_key=config.GROQ_API_KEY)
 
 
-def _chat(system: str, user: str, temperature: float = 0.7, max_tokens: int = 1024) -> str:
+def _chat(system: str, user: str, temperature: float = 1.0, max_tokens: int = 8192) -> str:
     resp = _client().chat.completions.create(
         model=config.GROQ_MODEL,
         messages=[
@@ -19,7 +19,10 @@ def _chat(system: str, user: str, temperature: float = 0.7, max_tokens: int = 10
             {"role": "user",   "content": user},
         ],
         temperature=temperature,
-        max_tokens=max_tokens,
+        max_completion_tokens=max_tokens,
+        top_p=1,
+        reasoning_effort="medium",
+        stop=None,
     )
     return (resp.choices[0].message.content or "").strip()
 
@@ -561,8 +564,11 @@ def analyze_product_image(image_url: str) -> str:
                     ],
                 }
             ],
-            temperature=0.2,
-            max_tokens=200,
+            temperature=0.6,
+            max_completion_tokens=512,
+            top_p=0.95,
+            reasoning_effort="default",
+            stop=None,
         )
         return (resp.choices[0].message.content or "").strip()
     except Exception:
@@ -588,8 +594,11 @@ def is_logo_image(image_url: str) -> bool:
                     )},
                 ],
             }],
-            temperature=0.1,
-            max_tokens=5,
+            temperature=0.6,
+            max_completion_tokens=16,
+            top_p=0.95,
+            reasoning_effort="default",
+            stop=None,
         )
         answer = (resp.choices[0].message.content or "").strip().lower()
         return answer.startswith("yes")
