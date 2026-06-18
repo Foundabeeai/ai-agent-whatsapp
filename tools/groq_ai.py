@@ -177,38 +177,129 @@ def generate_caption(description: str, content_type: str, website_url: str = "")
     return _chat(system, user, temperature=0.75)
 
 
+def art_director_analyze(image_url: str, description: str, brand: dict) -> dict:
+    """
+    Two-step art director pipeline (Joseph Kosinski / commercial advertising style).
+
+    Step 1 — Vision analysis: deeply understand the product/service image.
+    Step 2 — Art direction: decide whether to reimagine the environment OR enhance in place,
+              then write the SeedDream img2img prompt accordingly.
+
+    Returns:
+        {
+          "analysis":    str   — what the vision model sees,
+          "strategy":    "reimagine" | "enhance",
+          "reasoning":   str   — why this strategy,
+          "prompt":      str   — final SeedDream img2img prompt,
+        }
+    """
+    import json as _json
+    import re as _re
+
+    brand_name   = brand.get("brand_name") or "the brand"
+    brand_colors = brand.get("brand_colors") or "rich neutrals with depth"
+    brand_voice  = brand.get("brand_voice") or "premium and cinematic"
+    social_goal  = brand.get("social_goal") or "create desire"
+
+    # ── Step 1: Vision analysis ──────────────────────────────────────────────
+    try:
+        vision_resp = _client().chat.completions.create(
+            model=config.GROQ_VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": (
+                        "You are a senior art director analyzing a product/service image for a commercial shoot. "
+                        "Analyze every detail:\n"
+                        "1. What is the product/service? Describe it precisely (shape, color, material, texture, size).\n"
+                        "2. What is the current environment/setting? (studio, lifestyle, outdoor, indoor, plain white, etc.)\n"
+                        "3. What is the lighting quality? (hard/soft, direction, color temperature, shadows)\n"
+                        "4. What is the overall aesthetic quality? (professional, amateur, flat, dynamic)\n"
+                        "5. Is the product placement contextually meaningful (e.g. food in a kitchen, gym gear at a gym)? "
+                        "   Or is it context-neutral (e.g. a bottle on white)?\n"
+                        "6. What is missing that would make this image more commercially powerful?\n"
+                        "Be specific and technical. 6-8 sentences."
+                    )},
+                ],
+            }],
+            temperature=0.6,
+            max_completion_tokens=512,
+            top_p=0.95,
+            reasoning_effort="default",
+            stop=None,
+        )
+        analysis = (vision_resp.choices[0].message.content or "").strip()
+    except Exception:
+        analysis = f"A product image for {brand_name}. The product is centered with standard lighting."
+
+    # ── Step 2: Art direction decision + prompt generation ──────────────────
+    system = (
+        "You are a world-class advertising art director with the cinematic visual intelligence of "
+        "Joseph Kosinski (Top Gun: Maverick, Tron Legacy) combined with the commercial photography "
+        "mastery of Annie Leibovitz and the advertising precision of David LaChapelle.\n\n"
+        "Your task: Given a product analysis, make two decisions:\n\n"
+        "DECISION 1 — Strategy:\n"
+        "  'reimagine': The product can be placed in a richer, more aspirational environment "
+        "  that amplifies its appeal WITHOUT losing its identity. Choose this when the current "
+        "  background is plain/neutral or doesn't add emotional value.\n"
+        "  'enhance': The product is already in a meaningful contextual setting "
+        "  (e.g. food in a restaurant, car on a road, gym gear in a gym). "
+        "  Changing the environment would lose context. Instead, enhance lighting, "
+        "  atmosphere, and cinematic quality IN PLACE.\n\n"
+        "DECISION 2 — Write the SeedDream img2img prompt:\n"
+        "  CRITICAL RULES:\n"
+        "  - NEVER describe or alter the product itself. It is locked — only the world around it changes.\n"
+        "  - For 'reimagine': describe a powerful new environment, lighting setup, atmosphere, mood. "
+        "    Think: where would this product look most desirable? A luxury penthouse? Golden hour beach? "
+        "    Moody industrial loft? Cinematic forest? Match the brand's emotional territory.\n"
+        "  - For 'enhance': describe improved lighting (golden ratio, Rembrandt, cinematic key light), "
+        "    depth of field, atmospheric haze, color grading (teal-orange, warm film, cool fashion), "
+        "    and subtle environmental details that add richness without relocating the product.\n"
+        "  - Always end with: photorealistic, ultra-sharp product focus, commercial photography, "
+        "    8K resolution, shot on Hasselblad H6D, magazine cover quality.\n\n"
+        "Return ONLY valid JSON with keys: strategy (reimagine|enhance), reasoning (1 sentence), prompt (the full SeedDream prompt)."
+    )
+    user = (
+        f"Brand: {brand_name} | Visual tone: {brand_voice} | Brand colors: {brand_colors} | Goal: {social_goal}\n"
+        f"Content idea: {description}\n\n"
+        f"Product analysis:\n{analysis}\n\n"
+        "Decide strategy and write the img2img prompt. Return JSON only."
+    )
+    raw = _chat(system, user, temperature=1.0, max_tokens=1024)
+    try:
+        clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+        data = _json.loads(clean)
+        return {
+            "analysis":  analysis,
+            "strategy":  data.get("strategy", "reimagine"),
+            "reasoning": data.get("reasoning", ""),
+            "prompt":    data.get("prompt", ""),
+        }
+    except Exception:
+        # Fallback: use raw as prompt
+        return {
+            "analysis":  analysis,
+            "strategy":  "reimagine",
+            "reasoning": "parsed from raw output",
+            "prompt":    raw[:600],
+        }
+
+
 def generate_product_poster_prompt(description: str, brand: dict) -> str:
-    """
-    Generate a SeedDream img2img environment/lighting prompt for a product post.
-    The product itself is locked by a hard prefix in image_gen.generate_product_post —
-    this prompt ONLY describes the environment, lighting, and mood around the product.
-    Strict rules prevent hallucination of new product details.
-    """
+    """Legacy wrapper — kept for compatibility. Prefer art_director_analyze()."""
     brand_name   = brand.get("brand_name") or "the brand"
     brand_colors = brand.get("brand_colors") or "neutral professional tones"
     brand_voice  = brand.get("brand_voice") or "premium and clean"
-
     system = (
         "You are an expert commercial photography art director. "
-        "The product image is FIXED — it will be injected into the scene as-is. "
-        "Your ONLY job is to describe the ENVIRONMENT and LIGHTING around the product. "
-        "\n\nSTRICT RULES — follow every one:\n"
-        "1. NEVER describe the product itself — no colors, shapes, labels, packaging.\n"
-        "2. NEVER invent or mention any text, logos, or brand marks in the scene.\n"
-        "3. ONLY describe: surface the product sits on, background, lighting setup, atmosphere, mood.\n"
-        "4. Lighting must be: professional studio or natural lifestyle — soft, directional, with subtle shadows.\n"
-        "5. Background must be: clean, uncluttered, blurred bokeh or elegant gradient.\n"
-        "6. The scene must feel like a premium commercial photo shoot.\n"
-        "7. Square 1:1 composition — leave breathing room around the product.\n"
-        "8. End every prompt with: photorealistic, sharp product focus, 8K, commercial photography quality.\n"
-        "9. Output ONLY the environment/lighting prompt — one concise paragraph, no headers."
+        "Describe ONLY the environment and lighting around the product (product is fixed). "
+        "One paragraph, no headers. End with: photorealistic, 8K, commercial photography quality."
     )
     user = (
-        f"Brand: {brand_name}\n"
-        f"Brand colors to use in the environment: {brand_colors}\n"
-        f"Brand visual tone: {brand_voice}\n"
-        f"Content idea / occasion: {description}\n\n"
-        "Write the environment and lighting prompt (NOT the product — that is already in the reference image)."
+        f"Brand: {brand_name} | Colors: {brand_colors} | Voice: {brand_voice}\n"
+        f"Content idea: {description}\n"
+        "Write the environment/lighting prompt only."
     )
     return _chat(system, user, temperature=0.65, max_tokens=280)
 

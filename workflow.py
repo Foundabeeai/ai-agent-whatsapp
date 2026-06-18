@@ -138,7 +138,6 @@ _DEFAULT_STATUS = {
     "resolving_instagram":       "🔍 Looking up your Instagram account — almost done!",
     STEP_GENERATING:             "🎨 Generating your images — still working on it!",
     STEP_PUBLISHING:             "📤 Publishing your post — almost there!",
-    "generating_initial_content": "🎨 Creating your first week of content — this takes a few minutes. Hang tight!",
     STEP_REEL_APPROVAL:          "🎬 Your reel is being created — this takes a few minutes. Hang tight!",
 }
 
@@ -721,13 +720,25 @@ def _generate_and_notify_bg(phone: str) -> None:
         if session.reference_image_url:
             brand = session.brand_profile() if session.onboarding_complete else {}
 
-            session.bg_status = "🧠 Creating a cinematic prompt for your product..."
+            session.bg_status = "🎬 Art director is analyzing your product image..."
             save_session(session)
-            _send_async(phone, {"kind": "text", "text": "🚀 Got it! Using your product photo as the hero 🖼️\n"
-                                                         "Crafting a cinematic marketing prompt..."})
+            _send_async(phone, {"kind": "text", "text": "🚀 Got it! Sending your image to the art director...\n"
+                                                         "Analyzing the product and crafting the perfect scene 🎬"})
 
-            # Groq generates an environment/lighting prompt — product is locked by SeedDream
-            poster_prompt = groq_ai.generate_product_poster_prompt(description, brand)
+            # Art director: vision analysis → strategy → cinematic SeedDream prompt
+            ad_result = groq_ai.art_director_analyze(
+                image_url=session.reference_image_url,
+                description=description,
+                brand=brand,
+            )
+            poster_prompt = ad_result["prompt"]
+            strategy = ad_result.get("strategy", "reimagine")
+            strategy_msg = (
+                "✨ *Reimagining the environment* around your product for maximum impact..."
+                if strategy == "reimagine" else
+                "✨ *Enhancing in place* — your setting is perfect, upgrading the cinematic quality..."
+            )
+            _send_async(phone, {"kind": "text", "text": strategy_msg})
 
             est_secs = count * 100
             wait_str = ("~90 seconds" if est_secs < 120
@@ -1524,7 +1535,6 @@ def handle_incoming_message(
     # user messages so we don't spam them with "still working" replies.
     # The background thread sends its own progress updates via Twilio REST.
     _SILENT_STEPS = {
-        "generating_initial_content",
         STEP_VERIFYING_EMAIL,
         STEP_RECHECKING_PLAN,
         "resolving_instagram",
@@ -1860,7 +1870,7 @@ def handle_incoming_message(
                         "text": "Couldn't place that — try a city like *Dubai*, *Toronto*, or *Sydney*. Or type *skip* to use UTC."}
 
         session.onboarding_complete = True
-        session.step = "generating_initial_content"
+        session.step = STEP_CHOOSE_CONTENT_TYPE
         save_session(session)
 
         tz_note = f"⏰ Timezone set to *{session.user_timezone}*\n" if session.user_timezone else ""
@@ -1868,33 +1878,17 @@ def handle_incoming_message(
             ", ".join(f"@{h}" for h in session.competitor_handles)
             if session.competitor_handles else "none specified"
         )
-        schedule_label = {
-            "morning": "Morning (8–10 AM)",
-            "midday": "Midday (12–2 PM)",
-            "evening": "Evening (5–8 PM)",
-        }.get(session.posting_schedule or "", "your chosen time")
 
         summary = (
-            f"✅ You're all set, *{session.brand_name}*!\n\n"
-            f"Here's what BeeQ is working on right now:\n"
-            f"🧠 Building your brand voice profile\n"
-            f"🔍 Noting your competitors: {competitors_str}\n"
-            f"🎨 Drafting 3 posts + 1 carousel for your first week\n"
-            f"⏰ Targeting {schedule_label} posting times\n"
+            f"✅ You're all set, *{session.brand_name}*! 🐝\n\n"
+            f"🔍 Competitors noted: {competitors_str}\n"
             f"{tz_note}\n"
-            f"I'll have your first content drafts ready in about 10–15 minutes. "
-            f"When they arrive, reply *approve*, *edit*, or tell me what to change.\n\n"
-            f"You can send me more photos or ideas any time. I'm always on. 🐝"
+            f"📅 I'm building your *30-day content calendar* — you'll get the link in a moment.\n"
+            f"Every morning at 8 AM I'll send you that day's content for approval.\n\n"
+            f"You can also create content anytime below 👇"
         )
-        _start_bg(_generate_initial_content_bg, phone)
         _start_bg(_generate_calendar_bg, phone)
         return {"kind": "text", "text": summary}
-
-    # STEP: generating_initial_content (async in progress)
-    if session.step == "generating_initial_content":
-        return {"kind": "text",
-                "text": "⏳ BeeQ is building your first week of content — this takes about 10–15 minutes. "
-                        "I'll send each piece as it's ready!"}
 
     # ------------------------------------------------------------------
     # STEP: choose_content_type
@@ -2715,10 +2709,7 @@ def handle_incoming_message(
         return {"kind": "text",
                 "text": beeq("scheduled", time=friendly)}
 
-    # ------------------------------------------------------------------
-    # STEP: initial content review — user sees each piece one by one
-    # ------------------------------------------------------------------
-    if session.step == STEP_INITIAL_CONTENT_REVIEW:
+    if False and session.step == STEP_INITIAL_CONTENT_REVIEW:  # removed — calendar replaces this
         idx = session.initial_content_index
         queue = session.initial_content_queue
 
@@ -2784,9 +2775,7 @@ def handle_incoming_message(
         return _voice_reply(phone, "Say *approve* to post now, *schedule* to pick a time, or *skip* for the next one.")
 
     # ------------------------------------------------------------------
-    # STEP: initial content schedule — user provides date/time
-    # ------------------------------------------------------------------
-    if session.step == STEP_INITIAL_CONTENT_SCHEDULE:
+    if False and session.step == STEP_INITIAL_CONTENT_SCHEDULE:  # removed — calendar replaces this
         idx = session.initial_content_index
         queue = session.initial_content_queue
         item = queue[idx] if idx < len(queue) else None
