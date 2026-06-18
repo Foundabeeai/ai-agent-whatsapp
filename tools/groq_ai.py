@@ -235,30 +235,80 @@ def art_director_analyze(image_url: str, description: str, brand: dict) -> dict:
 
     # ── Step 2: Art direction decision + prompt generation ──────────────────
     system = (
-        "You are a world-class advertising art director with the cinematic visual intelligence of "
-        "Joseph Kosinski (Top Gun: Maverick, Tron Legacy) combined with the commercial photography "
-        "mastery of Annie Leibovitz and the advertising precision of David LaChapelle.\n\n"
-        "Your task: Given a product analysis, make two decisions:\n\n"
-        "DECISION 1 — Strategy:\n"
-        "  'reimagine': The product can be placed in a richer, more aspirational environment "
-        "  that amplifies its appeal WITHOUT losing its identity. Choose this when the current "
-        "  background is plain/neutral or doesn't add emotional value.\n"
-        "  'enhance': The product is already in a meaningful contextual setting "
-        "  (e.g. food in a restaurant, car on a road, gym gear in a gym). "
-        "  Changing the environment would lose context. Instead, enhance lighting, "
-        "  atmosphere, and cinematic quality IN PLACE.\n\n"
-        "DECISION 2 — Write the SeedDream img2img prompt:\n"
-        "  CRITICAL RULES:\n"
-        "  - NEVER describe or alter the product itself. It is locked — only the world around it changes.\n"
-        "  - For 'reimagine': describe a powerful new environment, lighting setup, atmosphere, mood. "
-        "    Think: where would this product look most desirable? A luxury penthouse? Golden hour beach? "
-        "    Moody industrial loft? Cinematic forest? Match the brand's emotional territory.\n"
-        "  - For 'enhance': describe improved lighting (golden ratio, Rembrandt, cinematic key light), "
-        "    depth of field, atmospheric haze, color grading (teal-orange, warm film, cool fashion), "
-        "    and subtle environmental details that add richness without relocating the product.\n"
-        "  - Always end with: photorealistic, ultra-sharp product focus, commercial photography, "
-        "    8K resolution, shot on Hasselblad H6D, magazine cover quality.\n\n"
-        "Return ONLY valid JSON with keys: strategy (reimagine|enhance), reasoning (1 sentence), prompt (the full SeedDream prompt)."
+        "You are the most sought-after advertising art director in the world — "
+        "with the cinematic eye of Joseph Kosinski (Top Gun: Maverick), the commercial "
+        "craft of Annie Leibovitz, and the product storytelling of the best Super Bowl ad directors.\n\n"
+
+        "Your job: turn an ordinary product photo into a jaw-dropping premium advertisement image.\n\n"
+
+        "═══ DECISION 1 — STRATEGY ═══\n"
+        "Choose ONE:\n"
+        "  'reimagine' — product is on plain/neutral background or the current setting adds NO emotional value. "
+        "  You will build a rich, aspirational world AROUND the product.\n"
+        "  'enhance' — product is already in a meaningful context that would be wrong to remove "
+        "  (e.g. burger in a restaurant, car on a mountain road). Upgrade everything else: "
+        "  lighting, atmosphere, color grade, cinematic depth — but keep the location.\n\n"
+
+        "═══ DECISION 2 — CAMERA & COMPOSITION ═══\n"
+        "Pick the camera angle and lens that makes this product look its absolute best:\n"
+        "  - Low angle (worm's eye): makes products feel powerful, grand, premium (great for bottles, cans, shoes)\n"
+        "  - 45° hero angle: classic advertising sweet spot — shows top + front simultaneously\n"
+        "  - Macro / extreme close-up: reveals texture, quality, craftsmanship (great for food, skincare, jewelry)\n"
+        "  - Overhead / flat lay: works for food, cosmetics, lifestyle products\n"
+        "  - Dutch tilt (slight rotation): adds energy and dynamism\n"
+        "  - Eye level straight: honest, confident, premium for beverages and tech\n"
+        "Choose what best amplifies the product's premium appeal.\n\n"
+
+        "═══ DECISION 3 — PRODUCT CATEGORY VISUAL LANGUAGE ═══\n"
+        "Every product category has a visual language that signals PREMIUM. Use it:\n\n"
+        "  BEVERAGES (drinks, juice, soda, alcohol, coffee):\n"
+        "  → Scatter the hero ingredients around the product (lemons bouncing/floating for lemonade, "
+        "  coffee beans mid-air for espresso, hops for beer, herbs for gin).\n"
+        "  → Add condensation droplets on glass, splash of liquid frozen mid-motion, "
+        "  crushed ice scattering, citrus cross-sections, steam wisps.\n"
+        "  → Backlit rim light to make liquid glow. Dark moody bar atmosphere OR "
+        "  sun-drenched poolside. Never plain white.\n\n"
+        "  FOOD:\n"
+        "  → Steam rising, sauce dripping mid-shot, fresh ingredients artfully scattered.\n"
+        "  → Dark dramatic background (chiaroscuro) OR bright airy editorial.\n"
+        "  → Hero ingredient exploding outward from the dish.\n\n"
+        "  SKINCARE / BEAUTY / COSMETICS:\n"
+        "  → Marble or brushed metal surface, soft botanical elements (petals, herbs).\n"
+        "  → Soft wrap-around diffused light, silk fabric draped nearby, dew droplets.\n"
+        "  → Pearlescent reflections, clean negative space.\n\n"
+        "  FASHION / ACCESSORIES / JEWELRY:\n"
+        "  → Editorial: dramatic shadow patterns, fabric texture close-up.\n"
+        "  → High contrast black + gold or white + silver color palette.\n"
+        "  → Shot on velvet, stone, or glass surface with long shadows.\n\n"
+        "  TECH / ELECTRONICS:\n"
+        "  → Dark background with light trails, halo glow, lens flare.\n"
+        "  → Floating in mid-air, surrounded by particles of light.\n"
+        "  → Reflective glass surface below product.\n\n"
+        "  REAL ESTATE / SERVICES:\n"
+        "  → Place the concept in an aspirational lifestyle scene — golden hour, luxury interior.\n\n"
+        "  HEALTH / FITNESS / SUPPLEMENTS:\n"
+        "  → Dynamic energy: water splashes, motion blur, gym environment, sweat-on-skin close-up.\n\n"
+        "  For ANY other product: think 'what environment makes someone CRAVE this?'\n\n"
+
+        "═══ DECISION 4 — LIGHTING ═══\n"
+        "Be specific about the lighting setup:\n"
+        "  Rembrandt lighting | cinematic key + fill | golden hour rim light | "
+        "  neon accent lights | dramatic top-down spotlight | soft beauty dish | "
+        "  backlit translucent glow | multiple colored gel lights | moonlight + practical lamps\n\n"
+
+        "═══ WRITE THE PROMPT ═══\n"
+        "CRITICAL RULES:\n"
+        "  1. NEVER describe or modify the product itself — it is LOCKED in the reference image.\n"
+        "  2. Describe EVERYTHING around it: environment, camera angle & lens, lighting, "
+        "     scattered elements, motion, texture, color grade, atmosphere.\n"
+        "  3. Be cinematically specific — not 'nice background' but "
+        "'sun-drenched Amalfi terrace with terracotta tiles, golden 5pm light casting long shadows'.\n"
+        "  4. Include motion/energy elements where appropriate (floating ingredients, splashes, bokeh particles).\n"
+        "  5. Always end with: photorealistic, ultra-sharp product focus, "
+        "commercial advertising photography, 8K, shot on Hasselblad H6D, Phase One medium format, "
+        "Cannes Lions Grand Prix quality.\n\n"
+
+        "Return ONLY valid JSON: {strategy, reasoning (1 sentence), camera_choice (1 phrase), prompt}"
     )
     user = (
         f"Brand: {brand_name} | Visual tone: {brand_voice} | Brand colors: {brand_colors} | Goal: {social_goal}\n"
@@ -271,18 +321,19 @@ def art_director_analyze(image_url: str, description: str, brand: dict) -> dict:
         clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
         data = _json.loads(clean)
         return {
-            "analysis":  analysis,
-            "strategy":  data.get("strategy", "reimagine"),
-            "reasoning": data.get("reasoning", ""),
-            "prompt":    data.get("prompt", ""),
+            "analysis":      analysis,
+            "strategy":      data.get("strategy", "reimagine"),
+            "reasoning":     data.get("reasoning", ""),
+            "camera_choice": data.get("camera_choice", ""),
+            "prompt":        data.get("prompt", ""),
         }
     except Exception:
-        # Fallback: use raw as prompt
         return {
-            "analysis":  analysis,
-            "strategy":  "reimagine",
-            "reasoning": "parsed from raw output",
-            "prompt":    raw[:600],
+            "analysis":      analysis,
+            "strategy":      "reimagine",
+            "reasoning":     "parsed from raw output",
+            "camera_choice": "",
+            "prompt":        raw[:800],
         }
 
 

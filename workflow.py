@@ -733,10 +733,12 @@ def _generate_and_notify_bg(phone: str) -> None:
             )
             poster_prompt = ad_result["prompt"]
             strategy = ad_result.get("strategy", "reimagine")
+            camera = ad_result.get("camera_choice", "")
+            camera_line = f"\n📷 *Camera:* {camera}" if camera else ""
             strategy_msg = (
-                "✨ *Reimagining the environment* around your product for maximum impact..."
+                f"✨ *Reimagining the environment* around your product for maximum impact...{camera_line}"
                 if strategy == "reimagine" else
-                "✨ *Enhancing in place* — your setting is perfect, upgrading the cinematic quality..."
+                f"✨ *Enhancing in place* — upgrading lighting & cinematic quality...{camera_line}"
             )
             _send_async(phone, {"kind": "text", "text": strategy_msg})
 
