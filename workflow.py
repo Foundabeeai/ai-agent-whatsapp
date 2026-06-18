@@ -1187,6 +1187,26 @@ def _generate_initial_content_bg(phone: str) -> None:
     _send_initial_content_item(phone, session, 0)
 
 
+def _generate_calendar_bg(phone: str) -> None:
+    """Generate 30-day content calendar and send the link to the user."""
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+    try:
+        import scheduler as _sched
+        session = get_session(phone)
+        url = _sched.generate_and_save_calendar(phone, session)
+        time.sleep(3)  # let initial content message go first
+        _send_async(phone, {"kind": "text",
+                            "text": (
+                                f"📅 *Your 30-Day Content Calendar is ready!*\n\n"
+                                f"View and track all your planned content here:\n"
+                                f"{url}\n\n"
+                                f"_Bookmark this link — it updates live as posts are approved or skipped._"
+                            )})
+    except Exception as exc:
+        _logger.warning("_generate_calendar_bg failed: %s", exc)
+
+
 def _send_initial_content_item(phone: str, session, index: int) -> None:
     """Send one queued initial content item to the user for review."""
     queue = session.initial_content_queue
@@ -1867,6 +1887,7 @@ def handle_incoming_message(
             f"You can send me more photos or ideas any time. I'm always on. 🐝"
         )
         _start_bg(_generate_initial_content_bg, phone)
+        _start_bg(_generate_calendar_bg, phone)
         return {"kind": "text", "text": summary}
 
     # STEP: generating_initial_content (async in progress)
@@ -2854,7 +2875,8 @@ def handle_incoming_message(
 
         # ── Skip ──
         if any(w in choice for w in ("skip", "dismiss", "no", "next", "later", "pass")):
-            # Update draft to skipped (keep as draft in DB, just move on)
+            import scheduler as _sched
+            _sched._mark_calendar_day(phone, "skipped")
             session.step = STEP_CHOOSE_CONTENT_TYPE
             session.daily_suggestion = None
             save_session(session)
@@ -2894,6 +2916,8 @@ def handle_incoming_message(
             session.step = STEP_PUBLISHING
             session.daily_suggestion = None
             save_session(session)
+            import scheduler as _sched
+            _sched._mark_calendar_day(phone, "approved")
             _start_bg(_publish_bg, phone)
             return {"kind": "text", "text": "📤 " + beeq("publishing")}
 

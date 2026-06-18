@@ -732,3 +732,64 @@ def generate_reel_text_overlays(description: str, brand: dict) -> list[str]:
     while len(lines) < 3:
         lines.append(fallbacks[len(lines)])
     return lines
+
+
+def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
+    """
+    Generate a 30-day content calendar for a brand.
+    Returns a list of 30 dicts:
+      { day: int, date: "YYYY-MM-DD", content_type: str, reel_type: str|None,
+        topic: str, caption_idea: str, status: "pending" }
+    """
+    import json as _json
+    import re as _re
+    from datetime import datetime as _dt, timedelta as _td
+
+    brand_name = brand.get("brand_name", "the brand")
+    brand_desc = brand.get("brand_description", "")
+    social_goal = brand.get("social_goal", "grow engagement")
+
+    system = (
+        "You are a social media strategist. Generate a 30-day content calendar. "
+        "Rules:\n"
+        "- Vary content types: image posts, carousels, reels (cinematic/ugc/ad)\n"
+        "- Monthly targets: 10 image posts, 8 carousels, 12 reels\n"
+        "- Reels: 70% cinematic, 20% ugc, 10% ad\n"
+        "- Topics must be specific, actionable, relevant to the brand\n"
+        "- caption_idea is a 1-sentence hook\n"
+        "Return ONLY a JSON array of 30 objects with keys: "
+        "day (1-30), content_type (image_post|carousel|reel), "
+        "reel_type (cinematic|ugc|ad|null), topic (string), caption_idea (string).\n"
+        "No markdown, no explanation, just the JSON array."
+    )
+    user = (
+        f"Brand: {brand_name}\n"
+        f"Description: {brand_desc}\n"
+        f"Goal: {social_goal}\n"
+        "Generate the 30-day calendar JSON array now."
+    )
+
+    raw = _chat(system, user, temperature=1.0, max_tokens=4096)
+
+    # Extract JSON array
+    try:
+        match = _re.search(r'\[[\s\S]+\]', raw)
+        data = _json.loads(match.group(0) if match else raw)
+    except Exception:
+        data = []
+
+    # Build final list with dates + status
+    start = _dt.strptime(start_date_str, "%Y-%m-%d")
+    calendar = []
+    for i in range(30):
+        entry = data[i] if i < len(data) else {}
+        calendar.append({
+            "day": i + 1,
+            "date": (start + _td(days=i)).strftime("%Y-%m-%d"),
+            "content_type": entry.get("content_type", "image_post"),
+            "reel_type": entry.get("reel_type"),
+            "topic": entry.get("topic", f"Day {i+1} content"),
+            "caption_idea": entry.get("caption_idea", ""),
+            "status": "pending",
+        })
+    return calendar

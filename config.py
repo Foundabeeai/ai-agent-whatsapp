@@ -94,3 +94,7 @@ GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 # App
 PORT = _get_int("PORT", 5000)
 FLASK_DEBUG = _get("FLASK_DEBUG", "0") == "1"
+
+# Public base URL for calendar links (no trailing slash)
+# Set PUBLIC_HOST in .env, e.g. http://3.97.167.111:5000
+PUBLIC_HOST = _get("PUBLIC_HOST", "")

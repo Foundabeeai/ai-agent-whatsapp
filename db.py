@@ -59,6 +59,8 @@ def _ensure_indexes(db: Database) -> None:
     db.sessions.create_index([("verified_email", 1)])
     db.posts.create_index([("phone_number", 1), ("created_at", -1)])
     db.posts.create_index([("phone_number", 1), ("status", 1), ("content_type", 1)])
+    db.content_calendars.create_index([("phone_number", 1)], unique=True)
+    db.content_calendars.create_index([("token", 1)], unique=True)
 
 
 def log_inbound(phone_number: str, text: str, media_urls: list[str] | None = None) -> None:
@@ -388,3 +390,62 @@ def format_post_summary(phone_number: str) -> str:
         lines.append("\nNo posts created yet. Let's make something! 🐝")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Content Calendar
+# ---------------------------------------------------------------------------
+
+def save_content_calendar(phone_number: str, token: str, brand_name: str, days: list) -> None:
+    """Upsert a 30-day content calendar for a user."""
+    try:
+        db = get_db()
+        db.content_calendars.update_one(
+            {"phone_number": phone_number},
+            {"$set": {
+                "phone_number": phone_number,
+                "token": token,
+                "brand_name": brand_name,
+                "days": days,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
+
+def get_content_calendar_by_token(token: str) -> dict | None:
+    """Load a calendar by its public token."""
+    try:
+        db = get_db()
+        doc = db.content_calendars.find_one({"token": token})
+        if doc:
+            doc.pop("_id", None)
+        return doc
+    except Exception:
+        return None
+
+
+def get_content_calendar(phone_number: str) -> dict | None:
+    """Load a calendar by phone number."""
+    try:
+        db = get_db()
+        doc = db.content_calendars.find_one({"phone_number": phone_number})
+        if doc:
+            doc.pop("_id", None)
+        return doc
+    except Exception:
+        return None
+
+
+def update_calendar_day_status(phone_number: str, day_index: int, status: str) -> None:
+    """Update the status of a specific calendar day (pending/approved/skipped)."""
+    try:
+        db = get_db()
+        db.content_calendars.update_one(
+            {"phone_number": phone_number},
+            {"$set": {f"days.{day_index}.status": status}},
+        )
+    except Exception:
+        pass
