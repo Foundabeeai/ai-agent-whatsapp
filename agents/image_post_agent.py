@@ -405,7 +405,7 @@ def _generate_no_image_bg(phone: str, session: UserSession, intent: dict) -> Non
 
         _send(phone, {"kind": "text", "text": "☁️ Uploading..."})
         s3_result = aws_storage.upload_urls(gen["urls"], user_id, media_kind="post")
-        s3_urls   = [u["s3_url"] for u in (s3_result.get("uploads") or []) if u.get("ok")]
+        s3_urls   = s3_result.get("s3_urls") or []
 
         s3_urls = _stamp_images(s3_urls, session=session, user_id=user_id)
 
