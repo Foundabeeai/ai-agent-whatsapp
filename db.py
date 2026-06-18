@@ -227,6 +227,44 @@ def find_verified_session_by_email(email: str) -> dict | None:
         return None
 
 
+def delete_user(phone_number: str) -> dict:
+    """
+    Fully wipe a user from all collections by phone number AND by their verified email
+    (to prevent brand profile being copied to a fresh session on next login).
+    Also clears the in-memory session cache.
+    Returns a summary dict of deleted counts.
+    """
+    try:
+        db = get_db()
+
+        # Find the email before deleting so we can wipe all sessions with that email
+        session_doc = db.sessions.find_one({"phone_number": phone_number}) or {}
+        email = session_doc.get("verified_email", "")
+
+        # Delete all sessions with this phone OR email (prevents brand-copy resurrection)
+        q_phone = {"phone_number": phone_number}
+        q_email = {"verified_email": email} if email else None
+
+        sessions_deleted = db.sessions.delete_many(q_phone).deleted_count
+        if q_email:
+            sessions_deleted += db.sessions.delete_many(q_email).deleted_count
+
+        results = {
+            "sessions":        sessions_deleted,
+            "messages":        db.messages.delete_many(q_phone).deleted_count,
+            "posts":           db.posts.delete_many(q_phone).deleted_count,
+            "content_calendars": db.content_calendars.delete_many(q_phone).deleted_count,
+            "post_style_skills": db.post_style_skills.delete_many(q_phone).deleted_count,
+        }
+
+        # Clear in-memory cache
+        _session_cache.pop(phone_number, None)
+
+        return results
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def get_message_history(phone_number: str, limit: int = 20) -> list[dict]:
     """Return last N messages for a phone number (newest first)."""
     try:
