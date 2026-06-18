@@ -63,7 +63,7 @@ def calendar_url(phone: str) -> str:
     """Public URL for the user's content calendar."""
     host = (config.PUBLIC_HOST or "").rstrip("/")
     if not host:
-        host = f"http://3.97.167.111:5000"
+        host = f"http://3.97.167.111:5001"
     return f"{host}/calendar/{calendar_token(phone)}"
 
 
