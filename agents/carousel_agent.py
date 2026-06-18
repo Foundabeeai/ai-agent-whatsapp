@@ -282,8 +282,9 @@ def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:
         sched_raw   = intent.get("scheduled_at")
 
         if publish_now:
-            result = zerini.publish_post(image_urls=image_urls, caption=caption,
-                                         profile_id=session.zerini_profile_id or "")
+            result = zerini.publish_now(account_id=session.zerini_account_id or "",
+                                        image_urls=image_urls, caption=caption,
+                                        profile_id=session.zerini_profile_id or "")
             post_id = result.get("post_id") if result.get("ok") else None
             db.log_post(phone_number=phone, content_type="carousel",
                         image_urls=image_urls, caption=caption,
@@ -300,9 +301,10 @@ def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:
                         sched_dt = sched_dt.replace(tzinfo=timezone.utc)
                 except Exception:
                     pass
-            result = zerini.schedule_post(image_urls=image_urls, caption=caption,
-                                          profile_id=session.zerini_profile_id or "",
-                                          scheduled_at=sched_dt)
+            result = zerini.schedule_post(account_id=session.zerini_account_id or "",
+                                          image_urls=image_urls, caption=caption,
+                                          scheduled_at=sched_dt,
+                                          profile_id=session.zerini_profile_id or "")
             post_id = result.get("post_id") if result.get("ok") else None
             db.log_post(phone_number=phone, content_type="carousel",
                         image_urls=image_urls, caption=caption,
@@ -336,7 +338,7 @@ def _finish_generation(
     voice_ok = intent.get("_voice_confirmed", False)
     for url in s3_urls:
         _send(phone, {"kind": "media", "text": "", "media_url": url})
-        time.sleep(0.5)
+        time.sleep(1.5)
 
     _send(phone, {
         "kind": "text",

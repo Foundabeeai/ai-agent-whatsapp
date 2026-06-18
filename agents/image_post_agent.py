@@ -451,7 +451,8 @@ def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:
         scheduled_at = intent.get("scheduled_at")
 
         if publish_now:
-            result = zerini.publish_post(
+            result = zerini.publish_now(
+                account_id=session.zerini_account_id or "",
                 image_urls=image_urls,
                 caption=caption,
                 profile_id=session.zerini_profile_id or "",
@@ -483,10 +484,11 @@ def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:
                     sched_dt = None
 
             result = zerini.schedule_post(
+                account_id=session.zerini_account_id or "",
                 image_urls=image_urls,
                 caption=caption,
-                profile_id=session.zerini_profile_id or "",
                 scheduled_at=sched_dt,
+                profile_id=session.zerini_profile_id or "",
             )
             post_id = result.get("post_id") if result.get("ok") else None
             db.log_post(
@@ -535,10 +537,10 @@ def _finish_generation(
 
     voice_ok = intent.get("_voice_confirmed", False)
 
-    # Send images
+    # Send images — sleep after each so WhatsApp delivers media before caption
     for url in s3_urls:
         _send(phone, {"kind": "media", "text": "", "media_url": url})
-        time.sleep(0.4)
+        time.sleep(1.5)
 
     # Send caption for review
     _send(phone, {
