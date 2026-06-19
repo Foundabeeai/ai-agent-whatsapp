@@ -257,6 +257,15 @@ def delete_user(phone_number: str) -> dict:
             "post_style_skills": db.post_style_skills.delete_many(q_phone).deleted_count,
         }
 
+        # Also delete from backend beeq_calendars (demo-foundabee DB)
+        try:
+            fdb = _get_foundabee_db()
+            results["beeq_calendars_backend"] = fdb["beeq_calendars"].delete_many(
+                {"phone_number": phone_number}
+            ).deleted_count
+        except Exception:
+            results["beeq_calendars_backend"] = "error"
+
         # Clear in-memory cache
         _session_cache.pop(phone_number, None)
 
