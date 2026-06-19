@@ -129,17 +129,62 @@ def _extract_images(soup: BeautifulSoup, base_url: str) -> list[str]:
     return unique[:_MAX_IMAGES]
 
 
+# Quality thresholds for scraped images
+_MIN_LONG_SIDE  = 700      # px — reject anything smaller (thumbnails, icons)
+_MIN_BYTES      = 25_000   # ~25KB — reject tiny/placeholder images
+_MAX_ASPECT     = 3.0      # reject extreme banners/strips
+
+
 def _upload_images(image_urls: list[str], phone: str) -> list[str]:
-    """Download each image and upload to S3. Returns presigned S3 URLs."""
-    from tools.aws_storage import upload_from_url
-    s3_urls: list[str] = []
+    """
+    Download each candidate, keep only HIGH-QUALITY images (large enough, real photos),
+    rank by resolution, upload the best ones to S3. Returns presigned S3 URLs.
+    """
+    from io import BytesIO as _BytesIO
+    from PIL import Image as _Image
+    from tools.aws_storage import upload_bytes
+
+    scored: list[tuple[int, bytes, str]] = []  # (pixel_area, bytes, ext)
     for url in image_urls:
         try:
-            result = upload_from_url(url, user_id=phone, media_kind="scraped")
-            if result.get("ok"):
-                s3_urls.append(result["s3_url"])
+            resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+            if not resp.ok:
+                continue
+            data = resp.content
+            if len(data) < _MIN_BYTES:
+                continue
+            try:
+                im = _Image.open(_BytesIO(data))
+                w, h = im.size
+            except Exception:
+                continue
+            long_side  = max(w, h)
+            short_side = max(1, min(w, h))
+            if long_side < _MIN_LONG_SIDE:
+                continue
+            if long_side / short_side > _MAX_ASPECT:
+                continue
+            ext = (im.format or "JPEG").lower().replace("jpeg", "jpg")
+            scored.append((w * h, data, ext))
         except Exception as exc:
-            logger.debug("Failed to upload scraped image %s: %s", url, exc)
+            logger.debug("Failed to fetch/validate scraped image %s: %s", url, exc)
+
+    # Highest resolution first
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    s3_urls: list[str] = []
+    for _area, data, ext in scored[:_MAX_IMAGES]:
+        try:
+            ct = "image/png" if ext == "png" else "image/jpeg"
+            up = upload_bytes(data, content_type=ct, extension=ext,
+                              folder=f"{phone}/scraped")
+            if up.get("ok"):
+                s3_urls.append(up["s3_url"])
+        except Exception as exc:
+            logger.debug("Failed to upload scraped image: %s", exc)
+
+    logger.info("scraped %d candidate images → %d high-quality uploaded",
+                len(image_urls), len(s3_urls))
     return s3_urls
 
 

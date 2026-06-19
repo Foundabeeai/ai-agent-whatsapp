@@ -57,11 +57,12 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
     Harness calls this when it's confident the user wants an image post.
     Either kicks off generation immediately or asks the one thing that's missing.
     """
-    description = intent.get("description", "").strip()
-    use_ref     = intent.get("use_reference_image", False)
-    media_urls  = intent.get("_media_urls", [])
-    media_types = intent.get("_media_types", [])
-    voice_ok    = intent.get("_voice_confirmed", False)
+    description  = intent.get("description", "").strip()
+    use_ref      = intent.get("use_reference_image", False)
+    media_urls   = intent.get("_media_urls", [])
+    media_types  = intent.get("_media_types", [])
+    voice_ok     = intent.get("_voice_confirmed", False)
+    scraped_imgs = intent.get("_scraped_image_urls", [])
 
     has_image = bool(media_urls and any(t.startswith("image/") for t in media_types))
 
@@ -86,6 +87,25 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
             daemon=True,
         ).start()
         _send(phone, {"kind": "text", "text": "🚀 Got it! Sending to the art director now..."})
+        return {"kind": "none"}
+
+    # Scraped images from a link the user shared → use the best one as the base, no need to ask
+    if scraped_imgs and not has_image:
+        intent["_sub_step"] = "generating"
+        session.agent_intent = intent
+        save_session(session)
+        threading.Thread(
+            target=_generate_with_image_bg,
+            args=(phone, session, intent, [], []),
+            daemon=True,
+        ).start()
+        _send(phone, {
+            "kind": "text",
+            "text": (
+                f"🔗 Got it — using the photos from your link as the base.\n"
+                f"🎨 Creating your post: _{description}_\n⏱ ~90 seconds ☕"
+            ),
+        }, tts=voice_ok)
         return {"kind": "none"}
 
     # No product image but user might want to provide one
@@ -303,8 +323,16 @@ def _generate_with_image_bg(
         brand       = session.brand_profile() if session.onboarding_complete else {}
         style_skill = (session.post_style_skill or db.get_post_style_skill(phone)) if use_style else None
 
-        # Upload product image to S3
-        ref_url = session.reference_image_url  # may come from onboarding
+        scraped_imgs      = intent.get("_scraped_image_urls", [])
+        scraped_summaries = intent.get("_scraped_summaries", [])
+        scraped_ctx = ("\n\nContext from the link the user shared:\n" + "\n".join(scraped_summaries)
+                       if scraped_summaries else "")
+
+        # Resolve the reference image:
+        #   1. WhatsApp-attached image (upload to S3)
+        #   2. Best scraped image from a shared link (already an S3 URL)
+        #   3. Onboarding reference image
+        ref_url = session.reference_image_url
         if media_urls:
             for url, mt in zip(media_urls, media_types):
                 if mt.startswith("image/"):
@@ -314,17 +342,22 @@ def _generate_with_image_bg(
                         session.reference_image_url = ref_url
                         save_session(session)
                     break
+        elif scraped_imgs:
+            ref_url = scraped_imgs[0]  # already a high-quality S3 presigned URL
 
         if not ref_url:
-            # Fall back to text-only generation
+            # Fall back to text-only generation (carries scraped_ctx via intent)
             return _generate_no_image_bg(phone, session, intent)
 
-        # Art director
-        _send(phone, {"kind": "text", "text": "🎬 Art director analyzing your image..."})
+        # Art director — fold scraped property/product facts into the brief
+        _send(phone, {"kind": "text", "text": "🎬 Art director analyzing the image..."})
         style_ctx = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
+        ad_brief  = description + scraped_ctx
+        if style_ctx:
+            ad_brief += f"\n\nStyle guidance:\n{style_ctx}"
         ad_result = groq_ai.art_director_analyze(
             image_url=ref_url,
-            description=description + (f"\n\nStyle guidance:\n{style_ctx}" if style_ctx else ""),
+            description=ad_brief,
             brand=brand,
         )
         poster_prompt = ad_result["prompt"]
@@ -370,9 +403,9 @@ def _generate_with_image_bg(
             s3_urls, session=session, user_id=user_id
         )
 
-        # Generate caption with style skill
+        # Generate caption with style skill (include scraped property/product facts)
         caption = groq_ai.generate_caption_with_style(
-            description, "image_post",
+            description + scraped_ctx, "image_post",
             website_url=session.website_url or "",
             style_skill=style_skill,
         )
