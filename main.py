@@ -184,6 +184,27 @@ def health():
     return {"status": "ok", "service": "foundabee-whatsapp-automation"}, 200
 
 
+@app.route("/internal/calendar-approved", methods=["POST"])
+def internal_calendar_approved():
+    """
+    Called by the Foundabee backend when a user approves a calendar day via the web UI.
+    Triggers content generation and schedules via zerini for that date.
+    """
+    import json as _json
+    try:
+        payload = request.get_json(silent=True) or {}
+        phone   = payload.get("phone", "")
+        date    = payload.get("date", "")
+        day     = payload.get("day", {})
+        if not phone or not date or not day:
+            return {"ok": False, "error": "missing phone/date/day"}, 400
+        _bg(scheduler.trigger_approved_post, phone, date, day)
+        return {"ok": True}, 200
+    except Exception as exc:
+        logger.exception("internal_calendar_approved error: %s", exc)
+        return {"ok": False, "error": str(exc)}, 500
+
+
 @app.route("/calendar/<token>", methods=["GET"])
 def content_calendar(token: str):
     """Serve a user's 30-day content calendar as a styled HTML page."""

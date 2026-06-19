@@ -123,7 +123,24 @@ def generate_and_save_calendar(phone: str, session) -> str:
         _logger.warning("generate_30_day_calendar failed: %s", exc)
         days = _fallback_calendar(start_date)
 
-    return _post_calendar_to_backend(phone, session, days)
+    url = _post_calendar_to_backend(phone, session, days)
+
+    # Send today's post immediately when the calendar is first created
+    from datetime import datetime as _dt2
+    today_str = _dt2.now(timezone.utc).strftime("%Y-%m-%d")
+    today_day  = next((d for d in days if d.get("date") == today_str), None)
+    if today_day:
+        ct = today_day.get("content_type", "image_post")
+        rt = today_day.get("reel_type")
+        _logger.info("Calendar created — firing today's %s immediately for %s", ct, phone)
+        threading.Thread(
+            target=_generate_and_send_suggestion,
+            args=(phone, ct, rt, today_str),
+            daemon=True,
+            name=f"first-post-{phone[-6:]}",
+        ).start()
+
+    return url
 
 
 def _fallback_calendar(start_date: str) -> list[dict]:
@@ -298,7 +315,12 @@ def _pick_content_type(phone: str, year: int, month: int) -> tuple[str | None, s
 # Content generation + send
 # ---------------------------------------------------------------------------
 
-def _generate_and_send_suggestion(phone: str, content_type: str, reel_type: str | None) -> None:
+def _generate_and_send_suggestion(
+    phone: str,
+    content_type: str,
+    reel_type: str | None,
+    date_str: str | None = None,
+) -> None:
     import workflow as wf
     session = get_session(phone)
     brand = session.brand_profile()
@@ -306,11 +328,11 @@ def _generate_and_send_suggestion(phone: str, content_type: str, reel_type: str 
 
     try:
         if content_type == "image_post":
-            _send_post_suggestion(phone, session, brand, brand_name, wf)
+            _send_post_suggestion(phone, session, brand, brand_name, wf, date_str=date_str)
         elif content_type == "carousel":
-            _send_carousel_suggestion(phone, session, brand, brand_name, wf)
+            _send_carousel_suggestion(phone, session, brand, brand_name, wf, date_str=date_str)
         elif content_type == "reel":
-            _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf)
+            _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf, date_str=date_str)
     except Exception as exc:
         _logger.error("daily suggestion failed for %s: %s", phone, exc)
         wf._send_async(phone, {"kind": "text",
@@ -342,16 +364,15 @@ def _upload_to_s3(image_url_raw: str, folder: str = "daily") -> str:
     return image_url_raw
 
 
-def _send_post_suggestion(phone, session, brand, brand_name, wf) -> None:
+def _send_post_suggestion(phone, session, brand, brand_name, wf, date_str: str | None = None) -> None:
     from tools import groq_ai, image_gen, aws_storage
     from tools.carousel_composer import stamp_post_image
 
-    description = (
+    base_description = (
         f"Daily social media post for {brand.get('brand_name', 'our brand')}. "
         f"{brand.get('brand_description', '')}. Goal: {brand.get('social_goal', 'engagement')}."
     )
-    # Check calendar for today's topic
-    _enrich_description_from_calendar(phone, description)
+    description = _build_description_with_notes(phone, date_str, base_description)
 
     prompts = groq_ai.generate_image_prompts(description, count=1, brand=brand)
     prompt_text = prompts[0] if prompts else description
@@ -412,13 +433,12 @@ def _send_post_suggestion(phone, session, brand, brand_name, wf) -> None:
                                    "⏭ *skip* — dismiss for today"})
 
 
-def _send_carousel_suggestion(phone, session, brand, brand_name, wf) -> None:
+def _send_carousel_suggestion(phone, session, brand, brand_name, wf, date_str: str | None = None) -> None:
     from tools import groq_ai, aws_storage
     from tools.carousel_composer import make_research_carousel
 
-    topic = _get_calendar_topic(phone) or (
-        f"{brand.get('social_goal', 'industry insights')} for {brand.get('brand_name', 'our brand')}"
-    )
+    base_topic = f"{brand.get('social_goal', 'industry insights')} for {brand.get('brand_name', 'our brand')}"
+    topic = _build_description_with_notes(phone, date_str, base_topic)
     slides_data = groq_ai.generate_research_carousel_content(topic, brand, slide_count=4)
     brand_colors_hex = groq_ai.get_brand_hex_colors(brand.get("brand_colors", ""))
     slides_list = make_research_carousel(
@@ -476,14 +496,18 @@ def _send_carousel_suggestion(phone, session, brand, brand_name, wf) -> None:
                                    "⏭ *skip* — dismiss for today"})
 
 
-def _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf) -> None:
+def _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf, date_str: str | None = None) -> None:
     from session_store import STEP_DAILY_SUGGESTION
 
     reel_label = {"cinematic": "cinematic product reel", "ugc": "UGC-style reel",
                   "ad": "full ad reel"}.get(reel_type or "cinematic", "reel")
 
-    topic = _get_calendar_topic(phone) or ""
+    day_data   = _get_calendar_day_data(phone, date_str) if date_str else None
+    topic      = (day_data or {}).get("topic") or _get_calendar_topic(phone) or ""
+    notes      = (day_data or {}).get("notes") or ""
     topic_line = f"\n📋 *Today's topic:* _{topic}_" if topic else ""
+    notes_line = f"\n📝 *Notes:* _{notes}_" if notes else ""
+    topic_line = topic_line + notes_line
 
     session = get_session(phone)
     session.daily_suggestion = {
@@ -521,9 +545,48 @@ def _get_calendar_topic(phone: str) -> str | None:
     return None
 
 
+def _get_calendar_day_data(phone: str, date_str: str) -> dict | None:
+    """Return the full day dict for a specific date from the calendar."""
+    cal = db.get_content_calendar(phone)
+    if not cal:
+        return None
+    for day in cal.get("days", []):
+        if day.get("date") == date_str:
+            return day
+    return None
+
+
 def _enrich_description_from_calendar(phone: str, default: str) -> str:
     topic = _get_calendar_topic(phone)
     return topic if topic else default
+
+
+def _build_description_with_notes(phone: str, date_str: str | None, default: str) -> str:
+    """
+    Build a content description enriched with the calendar topic and user notes.
+    Notes carry extra weight — they reflect user's explicit direction.
+    """
+    if date_str:
+        day_data = _get_calendar_day_data(phone, date_str)
+    else:
+        from datetime import datetime as _dt
+        date_str = _dt.now(timezone.utc).strftime("%Y-%m-%d")
+        day_data = _get_calendar_day_data(phone, date_str)
+
+    if not day_data:
+        return default
+
+    parts = []
+    if day_data.get("topic"):
+        parts.append(f"Topic: {day_data['topic']}")
+    if day_data.get("caption_idea"):
+        parts.append(f"Caption direction: {day_data['caption_idea']}")
+    # Notes have the most weight — put them first and flag importance
+    if day_data.get("notes"):
+        notes = day_data["notes"].strip()
+        parts.insert(0, f"USER NOTES (follow closely): {notes}")
+
+    return ". ".join(parts) if parts else default
 
 
 def _mark_calendar_day(phone: str, status: str) -> None:
@@ -537,3 +600,162 @@ def _mark_calendar_day(phone: str, status: str) -> None:
         if day.get("date") == today_str:
             db.update_calendar_day_status(phone, i, status)
             break
+
+
+# ---------------------------------------------------------------------------
+# Calendar approval trigger (called from /internal/calendar-approved webhook)
+# ---------------------------------------------------------------------------
+
+def trigger_approved_post(phone: str, date: str, day: dict) -> None:
+    """
+    Called when a user approves a day via the web calendar.
+    Generates the content and schedules it via zerini for `date` at the user's
+    posting time (08:00 local or user's configured timezone).
+    If the date is today, sends immediately; otherwise schedules via zerini.
+    """
+    import workflow as wf
+    from datetime import datetime as _dt
+
+    session = get_session(phone)
+    if not session.onboarding_complete:
+        _logger.warning("trigger_approved_post: %s not onboarded, skipping", phone)
+        return
+
+    content_type = day.get("content_type", "image_post")
+    reel_type    = day.get("reel_type")
+    brand        = session.brand_profile()
+    brand_name   = session.brand_name or "your brand"
+
+    today_str = _dt.now(timezone.utc).strftime("%Y-%m-%d")
+    is_today  = (date == today_str)
+
+    if is_today:
+        # Generate and send now (user will still see the preview + publish buttons)
+        _logger.info("trigger_approved_post: today=%s, sending immediately for %s", date, phone)
+        try:
+            if content_type == "image_post":
+                _send_post_suggestion(phone, session, brand, brand_name, wf, date_str=date)
+            elif content_type == "carousel":
+                _send_carousel_suggestion(phone, session, brand, brand_name, wf, date_str=date)
+            elif content_type == "reel":
+                _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf, date_str=date)
+        except Exception as exc:
+            _logger.error("trigger_approved_post (today) failed for %s: %s", phone, exc)
+        return
+
+    # Future date — schedule via zerini at 08:00 in user's timezone
+    try:
+        tz_str = session.user_timezone or "UTC"
+        import pytz as _pytz
+        tz = _pytz.timezone(tz_str)
+        target_local = _dt.strptime(date, "%Y-%m-%d").replace(hour=8, minute=0, second=0)
+        target_utc   = tz.localize(target_local).astimezone(_pytz.utc)
+    except Exception:
+        from datetime import timezone
+        target_utc = _dt.strptime(date, "%Y-%m-%d").replace(hour=8, tzinfo=timezone.utc)
+
+    _logger.info("trigger_approved_post: scheduling %s for %s at %s", content_type, phone, target_utc)
+
+    # Build description with notes for the prompt
+    base_desc = (
+        f"Social media {content_type.replace('_', ' ')} for {brand.get('brand_name', 'the brand')}. "
+        f"{brand.get('brand_description', '')}."
+    )
+    description = _build_description_with_notes(phone, date, base_desc)
+
+    # Generate the content then schedule via zerini
+    threading.Thread(
+        target=_generate_and_schedule_future_post,
+        args=(phone, session, content_type, reel_type, description, target_utc, date),
+        daemon=True,
+        name=f"sched-{phone[-6:]}-{date}",
+    ).start()
+
+
+def _generate_and_schedule_future_post(
+    phone: str,
+    session,
+    content_type: str,
+    reel_type: str | None,
+    description: str,
+    scheduled_at,
+    date: str,
+) -> None:
+    """Generate content and schedule it via zerini. Runs in a background thread."""
+    import workflow as wf
+    from tools import groq_ai, image_gen, aws_storage, zerini
+    from tools.carousel_composer import stamp_post_image
+
+    brand = session.brand_profile()
+
+    try:
+        if content_type == "image_post":
+            prompts   = groq_ai.generate_image_prompts(description, count=1, brand=brand)
+            prompt    = prompts[0] if prompts else description
+            image_url = image_gen.generate_image(prompt, aspect_ratio="1:1")
+            if not image_url:
+                raise RuntimeError("image generation returned None")
+            s3_url = _upload_to_s3(image_url, folder="scheduled")
+            caption = groq_ai.generate_caption(description, "image_post", brand.get("website_url", ""))
+            result  = zerini.schedule_post(
+                account_id=session.zerini_account_id or "",
+                image_urls=[s3_url],
+                caption=caption,
+                scheduled_at=scheduled_at,
+                profile_id=session.zerini_profile_id or "",
+            )
+
+        elif content_type == "carousel":
+            from tools.carousel_composer import make_research_carousel
+            slides_data = groq_ai.generate_research_carousel_content(description, brand, slide_count=4)
+            brand_colors = groq_ai.get_brand_hex_colors(brand.get("brand_colors", ""))
+            slides_list  = make_research_carousel(
+                slides_data, username=brand.get("brand_name", ""),
+                brand_name=brand.get("brand_name", ""),
+                avatar_url=session.brand_logo_url, brand_colors=brand_colors,
+            )
+            s3_urls = []
+            for slide_bytes in slides_list:
+                r = aws_storage.upload_bytes(slide_bytes, content_type="image/jpeg", extension="jpg", folder="scheduled")
+                if r.get("s3_url"): s3_urls.append(r["s3_url"])
+            if not s3_urls: raise RuntimeError("carousel upload failed")
+            caption = groq_ai.generate_caption(description, "carousel", brand.get("website_url", ""))
+            result  = zerini.schedule_post(
+                account_id=session.zerini_account_id or "",
+                image_urls=s3_urls,
+                caption=caption,
+                scheduled_at=scheduled_at,
+                profile_id=session.zerini_profile_id or "",
+            )
+
+        else:
+            # Reels can't easily be pre-scheduled without a video file — notify user instead
+            time_str = scheduled_at.strftime("%b %d at %I:%M %p UTC") if scheduled_at else date
+            wf._send_async(phone, {
+                "kind": "text",
+                "text": (
+                    f"📅 *Reel scheduled for {time_str}*\n\n"
+                    f"Topic: _{description}_\n\n"
+                    "I'll remind you on the day to create it! 🎬"
+                ),
+            })
+            return
+
+        time_str = scheduled_at.strftime("%b %d at %I:%M %p") if scheduled_at else date
+        ok = result.get("ok", False)
+        wf._send_async(phone, {
+            "kind": "text",
+            "text": (
+                f"✅ *Scheduled!* Your {content_type.replace('_', ' ')} is set for *{time_str}* 📅\n\n"
+                f"Topic: _{description[:120]}_"
+                if ok else
+                f"⚠️ Content generated but zerini scheduling failed for {date}. Try publishing manually."
+            ),
+        })
+
+    except Exception as exc:
+        _logger.error("_generate_and_schedule_future_post failed for %s: %s", phone, exc)
+        wf._send_async(phone, {
+            "kind": "text",
+            "text": f"⚠️ Couldn't auto-schedule the post for {date}: {exc}",
+        })
