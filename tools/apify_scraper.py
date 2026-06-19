@@ -60,8 +60,19 @@ _IMG_RE = re.compile(r"https?://[^\s\"'<>]+?\.(?:jpg|jpeg|png|webp)", re.IGNOREC
 _SIZE_TOKEN_RE = re.compile(r"[-_](?:cc_ft_|p_|e_)?\d{2,4}(?=\.(?:jpg|jpeg|png|webp))", re.IGNORECASE)
 
 
+_ZILLOW_HASH_RE = re.compile(r"/fp/([0-9a-f]{16,})", re.IGNORECASE)
+
+
 def _photo_key(url: str) -> str:
-    """Collapse size variants of the same Zillow photo to one key."""
+    """
+    Collapse all size/format variants of the same Zillow photo to one key.
+    Zillow URLs are .../fp/<hash>-<sizetoken>.jpg — the <hash> identifies the photo,
+    so group by it. (cc_ft_1536, p_d, p_e etc. are all the same photo.)
+    """
+    m = _ZILLOW_HASH_RE.search(url)
+    if m:
+        return m.group(1)
+    # Non-Zillow: strip trailing numeric size token
     return _SIZE_TOKEN_RE.sub("", url.split("?")[0])
 
 
