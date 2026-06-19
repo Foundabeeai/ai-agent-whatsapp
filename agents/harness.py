@@ -102,11 +102,14 @@ def route(
         "stop", "exit", "done", "quit", "skip", "nevermind", "never mind",
         "forget it", "nvm", "no thanks", "not now",
     }
-    _in_agent = session.step in (STEP_AGENT_IMAGE_POST, STEP_AGENT_CAROUSEL,
-                                  STEP_AGENT_REEL, STEP_AGENT_COLLECTING)
-    # Also reset if the sub_step is empty/None (agent stuck with no active step)
+    # Sub-agent steps always carry a _sub_step; collecting mode legitimately does not.
+    _in_subagent = session.step in (STEP_AGENT_IMAGE_POST, STEP_AGENT_CAROUSEL,
+                                     STEP_AGENT_REEL)
+    _in_agent    = _in_subagent or session.step == STEP_AGENT_COLLECTING
+    # "Stuck" only applies to a real sub-agent step that lost its _sub_step —
+    # NOT to collecting mode (which never has a _sub_step by design).
     _sub_step = (session.agent_intent or {}).get("_sub_step", "")
-    _stuck = _in_agent and not _sub_step
+    _stuck = _in_subagent and not _sub_step
     if _in_agent and not button_payload and not media_urls:
         if choice in _RESET_WORDS or _stuck:
             session.step = STEP_CHOOSE_CONTENT_TYPE
