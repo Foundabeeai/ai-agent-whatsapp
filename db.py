@@ -491,18 +491,22 @@ def get_content_calendar(phone_number: str) -> dict | None:
         return None
 
 
-def save_post_style_skill(phone_number: str, skill: dict, summary: str = "") -> None:
+def save_post_style_skill(phone_number: str, skill: dict, summary: str = "",
+                          compositor: dict | None = None) -> None:
     """Persist a user's post style skill (derived from their reference image)."""
     try:
         db = get_db()
+        payload: dict = {
+            "phone_number": phone_number,
+            "skill": skill,
+            "summary": summary,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if compositor:
+            payload["compositor"] = compositor
         db.post_style_skills.update_one(
             {"phone_number": phone_number},
-            {"$set": {
-                "phone_number": phone_number,
-                "skill": skill,
-                "summary": summary,
-                "updated_at": datetime.now(timezone.utc),
-            }},
+            {"$set": payload},
             upsert=True,
         )
     except Exception:
@@ -516,6 +520,18 @@ def get_post_style_skill(phone_number: str) -> dict | None:
         doc = db.post_style_skills.find_one({"phone_number": phone_number})
         if doc:
             return doc.get("skill")
+        return None
+    except Exception:
+        return None
+
+
+def get_post_style_compositor(phone_number: str) -> dict | None:
+    """Retrieve the compositor block (pixel-ready params) for a phone number."""
+    try:
+        db = get_db()
+        doc = db.post_style_skills.find_one({"phone_number": phone_number})
+        if doc:
+            return doc.get("compositor")
         return None
     except Exception:
         return None

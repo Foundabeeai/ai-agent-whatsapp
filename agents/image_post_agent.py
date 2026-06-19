@@ -590,11 +590,12 @@ def _ask_publish_action(
 def _stamp_images(
     s3_urls: list[str], session: UserSession, user_id: str
 ) -> list[str]:
-    """Add profile badge to images. Returns new S3 URLs (or original on failure)."""
+    """Add profile badge to images using user's style compositor. Returns new S3 URLs."""
     try:
         username   = session.instagram_username or session.brand_name or "brand"
         brand_name = session.brand_name or ""
         avatar_url = session.brand_assets[0] if session.brand_assets else None
+        compositor = db.get_post_style_compositor(session.phone_number)
         stamped = []
         for url in s3_urls:
             try:
@@ -606,6 +607,7 @@ def _stamp_images(
                     username=username,
                     brand_name=brand_name,
                     avatar_url=avatar_url,
+                    style_compositor=compositor,
                 )
                 up = aws_storage.upload_bytes(
                     stamped_bytes,

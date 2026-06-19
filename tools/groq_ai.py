@@ -852,20 +852,26 @@ def analyze_post_style(image_url: str) -> dict:
     """
     Two-step style fingerprinting pipeline.
 
-    Step 1 — Vision: Qwen deeply analyzes a reference social media post/graphic for
-    every visual and copy design decision it can observe.
+    Step 1 — Vision (VLM): Qwen analyzes the image with extreme precision, measuring
+    spatial positions as percentages of the canvas, estimating pixel sizes, and
+    cataloguing every design element present or absent.
 
-    Step 2 — LLM: GPT-OSS distills the observation into a structured style skill JSON
-    that can be injected verbatim into future image + caption prompts to replicate the look.
+    Step 2 — LLM: Distills the raw observation into two outputs:
+      a) A human-readable style skill (for prompt injection)
+      b) A compositor block with concrete pixel/percentage values the Pillow
+         carousel composer can use directly to replicate the layout.
 
-    Returns a dict with two top-level keys:
-      "skill"  — the structured style JSON (stored in MongoDB, injected into prompts)
-      "summary" — 1-2 sentence human-readable description of the style
+    Returns:
+      {
+        "skill":      dict  — full structured style (layout, typography, badge, colors, composition, caption_style)
+        "compositor": dict  — pixel-ready values for carousel_composer.py
+        "summary":    str   — 1-2 sentence human description
+      }
     """
     import json as _json
     import re as _re
 
-    # ── Step 1: Vision analysis — observe every design detail ───────────────
+    # ── Step 1: Deep VLM analysis ────────────────────────────────────────────
     try:
         vision_resp = _client().chat.completions.create(
             model=config.GROQ_VISION_MODEL,
@@ -874,127 +880,223 @@ def analyze_post_style(image_url: str) -> dict:
                 "content": [
                     {"type": "image_url", "image_url": {"url": image_url}},
                     {"type": "text", "text": (
-                        "You are a senior graphic designer and social media art director. "
-                        "Analyze every visual and copy design decision in this post/image with extreme precision.\n\n"
-                        "Examine and describe:\n"
-                        "1. TEXT PLACEMENT — where is text positioned? (top-center, bottom-left, overlay-center, etc.) "
-                        "Is there a headline? Where exactly? Body text? Caption area?\n"
-                        "2. TYPOGRAPHY — font weight (bold/regular/light), apparent font style "
-                        "(serif/sans-serif/script), text size hierarchy (large headline vs small body), "
-                        "letter spacing (tight/normal/wide), text color and any outline or shadow effects.\n"
-                        "3. PROFILE BADGE / BRANDING ELEMENT — is there a profile avatar, logo watermark, "
-                        "username handle, or brand badge visible? If yes: exact position, size (small/medium/large), "
-                        "shape (circular/rectangular), border/ring color if any.\n"
-                        "4. COLOR PALETTE — list the 2-4 dominant colors (describe them precisely: "
-                        "'deep navy #1a2b4c', 'warm cream', 'neon yellow'). What is the background color/treatment? "
-                        "What are the text colors? Any gradient?\n"
-                        "5. COMPOSITION & LAYOUT — where is the main subject/product placed? "
-                        "(center, left-third, full-bleed, top-half) How much negative/white space? "
-                        "Is there an overlay (dark gradient, frosted glass, color wash, none)?\n"
-                        "6. BACKGROUND STYLE — solid color, gradient, textured, photographic, environmental, "
-                        "abstract, pattern? Describe it.\n"
-                        "7. VISUAL MOOD & AESTHETIC — what overall aesthetic does this communicate? "
-                        "(luxury minimalist, bold vibrant, editorial clean, warm lifestyle, dark & moody, etc.)\n"
-                        "8. CAPTION/COPY STYLE — if visible: tone (professional/casual/excited), "
-                        "emoji usage (none/light/heavy), hashtag placement (inline/end-grouped/none), "
-                        "CTA style (direct/soft/question).\n\n"
-                        "Be extremely precise. Use exact position descriptions. "
-                        "This analysis will be used to replicate this exact style for future posts."
+                        "You are a senior graphic designer reverse-engineering a social media post to "
+                        "recreate it pixel-perfectly. Analyze this image with extreme precision.\n\n"
+
+                        "TREAT THE IMAGE AS A GRID: 0% = top/left edge, 100% = bottom/right edge.\n\n"
+
+                        "Report EXACTLY:\n\n"
+
+                        "1. CANVAS SIZE & RATIO — is this square (1:1), portrait (4:5 or 9:16), landscape? "
+                        "Estimate pixel dimensions (e.g. 1080×1080, 1080×1350).\n\n"
+
+                        "2. BACKGROUND — type: solid color / gradient / photograph / texture / abstract. "
+                        "If solid/gradient: exact hex colors. If photo: subject (person, product, scene, abstract). "
+                        "Any overlay (dark gradient from bottom, frosted glass panel, vignette)? "
+                        "Overlay opacity estimate (light ~30%, medium ~60%, heavy ~80%).\n\n"
+
+                        "3. PROFILE / BRAND BADGE — is a profile badge, avatar circle, logo watermark, or "
+                        "username handle present?\n"
+                        "   - If YES: position as % from top-left (e.g. 'top:5% left:6%'), "
+                        "     size as % of canvas width (e.g. 'avatar diameter ~7%'), "
+                        "     shape (perfect circle / rounded rect / rectangular), "
+                        "     background (white pill / dark pill / transparent / branded color), "
+                        "     border/ring (color, thickness estimate), "
+                        "     text alongside avatar (brand name + handle / brand name only / none), "
+                        "     font size of name vs handle as % of canvas height.\n"
+                        "   - If NO badge: state explicitly 'NO BADGE PRESENT'.\n\n"
+
+                        "4. SLIDE COUNTER / PAGE INDICATOR — is there a '1/7' style counter or dot indicators? "
+                        "Position, size, pill/dot style, colors.\n\n"
+
+                        "5. HEADLINE / MAIN TEXT — position as % from top (e.g. 'starts at 55% from top'), "
+                        "alignment (left / center / right), estimated font size as % of canvas height "
+                        "(e.g. '~7% of height ≈ 75px on 1080px canvas'), "
+                        "font weight (thin/light/regular/semibold/bold/black/extra-black), "
+                        "font category (sans-serif geometric / humanist sans / serif / display / script), "
+                        "text color (hex or precise description), "
+                        "letter spacing (tight=-2px / normal=0 / wide=+2px / very-wide=+5px+), "
+                        "uppercase? any text effects (shadow / outline / gradient fill / glow).\n\n"
+
+                        "6. BODY / SUBHEADLINE TEXT — same details as above. Position, size, weight, color.\n\n"
+
+                        "7. DECORATIVE ELEMENTS — any lines, geometric shapes, pills/tags, icons, "
+                        "accent bars, dividers? Position, color, size.\n\n"
+
+                        "8. SUBJECT / PRODUCT PLACEMENT — where is the main visual subject? "
+                        "Center / left-third / right-third / top-half / bottom-half / full-bleed / "
+                        "centered with negative space around. How much of the canvas does it occupy (%)?\n\n"
+
+                        "9. COLOR PALETTE — list all distinct colors used with hex estimates: "
+                        "background, primary text, secondary text, accent/highlight, badge background, badge border.\n\n"
+
+                        "10. OVERALL AESTHETIC — describe the vibe in 3-5 words "
+                        "(e.g. 'luxury dark minimalist', 'bright playful bold', 'clean editorial white').\n\n"
+
+                        "Be surgical. Use percentages, pixel estimates, hex colors. "
+                        "This exact description will be fed to code that DRAWS a new image replicating this style."
                     )},
                 ],
             }],
-            temperature=0.4,
-            max_completion_tokens=900,
+            temperature=0.3,
+            max_completion_tokens=1400,
             top_p=0.95,
             reasoning_effort="default",
             stop=None,
         )
         vision_analysis = (vision_resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        vision_analysis = "A social media post with standard layout, sans-serif text, centered subject, and clean background."
+    except Exception:
+        vision_analysis = (
+            "Square 1080x1080 canvas. Dark solid background #111111. "
+            "Profile badge: top-left at 5% top 6% left, white pill, circular avatar ~7% diameter, "
+            "brand name + @handle text. Headline at 55% from top, large bold sans-serif white text. "
+            "No body text. Dark editorial aesthetic."
+        )
 
-    # ── Step 2: Distill into a reusable style skill JSON ────────────────────
+    # ── Step 2: Distill into structured skill + compositor params ────────────
     system = (
-        "You are a design systems expert. Your job is to convert a visual analysis "
-        "of a social media post into a precise, structured style skill JSON "
-        "that a graphic designer could follow to exactly replicate the style.\n\n"
-        "Output ONLY valid JSON matching this schema exactly (no extra keys, no markdown):\n"
+        "You are a design systems engineer. Convert the visual analysis of a social media post "
+        "into two things:\n"
+        "1. A structured style skill JSON (for AI prompt injection)\n"
+        "2. A compositor block with CONCRETE PIXEL VALUES for a 1080×1080 Pillow canvas\n\n"
+        "The compositor block values are used directly in Python code to draw slides. "
+        "Be precise — wrong values produce broken layouts.\n\n"
+        "Output ONLY valid JSON with this exact schema (no markdown, no extra keys):\n"
         "{\n"
         '  "layout": {\n'
-        '    "text_placement": "string — e.g. bottom-center, top-left, overlay-center",\n'
-        '    "headline_zone": "string — where the main headline sits, e.g. upper-third centered",\n'
-        '    "body_zone": "string — where supporting text sits, or null if none",\n'
-        '    "subject_position": "string — where the main visual subject sits",\n'
+        '    "text_placement": "bottom-left | bottom-center | bottom-right | center | top-left | overlay-center",\n'
+        '    "headline_zone": "string — e.g. lower-third left-aligned",\n'
+        '    "body_zone": "string or null",\n'
+        '    "subject_position": "center | left-third | right-third | top-half | full-bleed",\n'
         '    "negative_space": "minimal | moderate | generous",\n'
         '    "overlay": "none | dark-gradient | frosted-glass | color-wash | vignette"\n'
         "  },\n"
         '  "typography": {\n'
         '    "font_style": "sans-serif | serif | script | bold-display | mixed",\n'
-        '    "headline_weight": "light | regular | semibold | bold | black/extra-bold",\n'
+        '    "headline_weight": "light | regular | semibold | bold | black",\n'
         '    "headline_size": "small | medium | large | very-large",\n'
         '    "letter_spacing": "tight | normal | wide | very-wide",\n'
-        '    "text_color_primary": "string — hex or description",\n'
-        '    "text_color_secondary": "string — hex or description, or null",\n'
-        '    "text_effects": "none | drop-shadow | outline | glow | uppercase-all | mixed-case"\n'
+        '    "text_color_primary": "#hex or description",\n'
+        '    "text_color_secondary": "#hex or null",\n'
+        '    "text_effects": "none | drop-shadow | outline | glow | uppercase-all"\n'
         "  },\n"
         '  "badge": {\n'
-        '    "present": true | false,\n'
-        '    "type": "profile-avatar | logo-watermark | username-handle | brand-stamp | null",\n'
-        '    "position": "string — e.g. bottom-right, top-left, or null",\n'
-        '    "size": "small | medium | large | null",\n'
-        '    "shape": "circular | rounded-rect | rectangular | null",\n'
-        '    "border_color": "string — color or null"\n'
+        '    "present": true,\n'
+        '    "type": "profile-avatar | logo-watermark | username-handle | brand-stamp",\n'
+        '    "position": "top-left | top-right | bottom-left | bottom-right | top-center",\n'
+        '    "size": "small | medium | large",\n'
+        '    "shape": "circular | rounded-rect | rectangular",\n'
+        '    "background": "white-pill | dark-pill | transparent | branded",\n'
+        '    "border_color": "#hex or null",\n'
+        '    "shows_handle": true\n'
         "  },\n"
         '  "colors": {\n'
-        '    "palette": ["string", "string"],\n'
-        '    "background": "string — color or treatment description",\n'
+        '    "palette": ["#hex1", "#hex2"],\n'
+        '    "background": "#hex or description",\n'
         '    "background_type": "solid | gradient | photographic | textured | abstract",\n'
-        '    "accent": "string — color used for highlights, buttons, or emphasis",\n'
-        '    "mood": "string — warm / cool / neutral / high-contrast / pastel / dark"\n'
+        '    "accent": "#hex",\n'
+        '    "mood": "warm | cool | neutral | high-contrast | pastel | dark"\n'
         "  },\n"
         '  "composition": {\n'
-        '    "style": "string — e.g. luxury-minimalist, bold-editorial, warm-lifestyle, dark-moody",\n'
+        '    "style": "luxury-minimalist | bold-editorial | warm-lifestyle | dark-moody | clean-minimal | vibrant-bold",\n'
         '    "framing": "centered | rule-of-thirds-left | rule-of-thirds-right | full-bleed | flat-lay",\n'
         '    "depth": "flat-2d | shallow-dof | deep-focus"\n'
         "  },\n"
         '  "caption_style": {\n'
         '    "tone": "professional | casual | excited | inspirational | minimal | humorous",\n'
-        '    "emoji_density": "none | light (1-2) | moderate (3-5) | heavy (6+)",\n'
+        '    "emoji_density": "none | light | moderate | heavy",\n'
         '    "hashtag_placement": "inline | end-grouped | none",\n'
-        '    "hashtag_count": "none | few (1-3) | moderate (4-7) | many (8+)",\n'
+        '    "hashtag_count": "none | few | moderate | many",\n'
         '    "cta_style": "direct-command | soft-invite | question | none"\n'
         "  },\n"
-        '  "summary": "string — 1-2 sentence description of the overall style for a human designer"\n'
-        "}"
+        '  "compositor": {\n'
+        '    "canvas_w": 1080,\n'
+        '    "canvas_h": 1080,\n'
+        '    "pad_x": 72,\n'
+        '    "overlay_top_alpha": 20,\n'
+        '    "overlay_bot_alpha": 200,\n'
+        '    "badge_present": true,\n'
+        '    "badge_position": "top-left | top-right | bottom-left | bottom-right",\n'
+        '    "badge_avatar_px": 72,\n'
+        '    "badge_offset_x": 72,\n'
+        '    "badge_offset_y": 56,\n'
+        '    "badge_shape": "pill | circle | square",\n'
+        '    "badge_bg_rgba": [255, 255, 255, 235],\n'
+        '    "badge_border_color": null,\n'
+        '    "badge_border_px": 0,\n'
+        '    "headline_size_px": 78,\n'
+        '    "headline_weight": "black | bold | regular",\n'
+        '    "headline_y_pct": 0.56,\n'
+        '    "headline_color": "#ffffff",\n'
+        '    "body_size_px": 26,\n'
+        '    "body_color": "#cccccc",\n'
+        '    "content_top_y": 220,\n'
+        '    "slide_counter_present": true,\n'
+        '    "slide_counter_position": "top-right | top-left | bottom-right | none",\n'
+        '    "accent_color": "#c0392b",\n'
+        '    "bg_primary": "#111111",\n'
+        '    "bg_secondary": "#ede8df",\n'
+        '    "text_uppercase": false,\n'
+        '    "letter_spacing_px": 2\n'
+        "  },\n"
+        '  "summary": "string — 1-2 sentence human description of the style"\n'
+        "}\n\n"
+        "COMPOSITOR RULES:\n"
+        "- canvas_w/h always 1080 for Instagram square\n"
+        "- badge_avatar_px: small=48, medium=72, large=96\n"
+        "- badge_offset_x/y: pixels from canvas edge to badge (based on observed position %)\n"
+        "- headline_y_pct: 0.0=top, 1.0=bottom — where the headline starts on cover slide\n"
+        "- headline_size_px: small=48, medium=62, large=78, very-large=92\n"
+        "- overlay_bot_alpha: none=0, light=100, medium=180, heavy=230\n"
+        "- If no badge: set badge_present=false and all badge_* to null/0\n"
+        "Output ONLY the JSON."
     )
 
-    raw = _chat(system, f"Visual analysis:\n{vision_analysis}", temperature=0.2, max_tokens=900)
+    raw = _chat(system, f"Visual analysis:\n{vision_analysis}", temperature=0.1, max_tokens=1200)
     try:
-        clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`").strip()
-        data = _json.loads(clean)
-        summary = data.pop("summary", "A clean, well-composed social media post style.")
-        return {"skill": data, "summary": summary}
+        cleaned = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`").strip()
+        data = _json.loads(cleaned)
+        summary    = data.pop("summary", "A clean, well-composed social media post style.")
+        compositor = data.pop("compositor", {})
+        return {"skill": data, "compositor": compositor, "summary": summary}
     except Exception:
-        # Return a minimal safe default
+        # Safe defaults
+        default_compositor = {
+            "canvas_w": 1080, "canvas_h": 1080, "pad_x": 72,
+            "overlay_top_alpha": 20, "overlay_bot_alpha": 200,
+            "badge_present": True, "badge_position": "top-left",
+            "badge_avatar_px": 72, "badge_offset_x": 72, "badge_offset_y": 56,
+            "badge_shape": "pill", "badge_bg_rgba": [255, 255, 255, 235],
+            "badge_border_color": None, "badge_border_px": 0,
+            "headline_size_px": 78, "headline_weight": "black",
+            "headline_y_pct": 0.56, "headline_color": "#ffffff",
+            "body_size_px": 26, "body_color": "#cccccc",
+            "content_top_y": 220, "slide_counter_present": True,
+            "slide_counter_position": "top-right",
+            "accent_color": "#f59e0b", "bg_primary": "#111111", "bg_secondary": "#ede8df",
+            "text_uppercase": False, "letter_spacing_px": 2,
+        }
         return {
             "skill": {
-                "layout": {"text_placement": "bottom-center", "headline_zone": "upper-third centered",
+                "layout": {"text_placement": "bottom-center", "headline_zone": "lower-third left-aligned",
                            "body_zone": None, "subject_position": "center", "negative_space": "moderate",
-                           "overlay": "none"},
+                           "overlay": "dark-gradient"},
                 "typography": {"font_style": "sans-serif", "headline_weight": "bold",
                                "headline_size": "large", "letter_spacing": "normal",
                                "text_color_primary": "#ffffff", "text_color_secondary": None,
                                "text_effects": "none"},
-                "badge": {"present": False, "type": None, "position": None, "size": None,
-                          "shape": None, "border_color": None},
+                "badge": {"present": True, "type": "profile-avatar", "position": "top-left",
+                          "size": "medium", "shape": "circular", "background": "white-pill",
+                          "border_color": None, "shows_handle": True},
                 "colors": {"palette": ["#1a1a1a", "#ffffff"], "background": "dark solid",
-                           "background_type": "solid", "accent": "#f59e0b", "mood": "neutral"},
-                "composition": {"style": "clean editorial", "framing": "centered", "depth": "flat-2d"},
-                "caption_style": {"tone": "professional", "emoji_density": "light (1-2)",
-                                  "hashtag_placement": "end-grouped", "hashtag_count": "few (1-3)",
+                           "background_type": "solid", "accent": "#f59e0b", "mood": "dark"},
+                "composition": {"style": "bold-editorial", "framing": "centered", "depth": "flat-2d"},
+                "caption_style": {"tone": "professional", "emoji_density": "light",
+                                  "hashtag_placement": "end-grouped", "hashtag_count": "few",
                                   "cta_style": "soft-invite"},
             },
-            "summary": "Clean, professional social media post with centered layout.",
+            "compositor": default_compositor,
+            "summary": "Bold editorial style with dark background and centered layout.",
         }
 
 
@@ -1402,3 +1504,116 @@ def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
             "status": "pending",
         })
     return calendar
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent action classifier — replaces keyword matching in step handlers
+# ---------------------------------------------------------------------------
+
+def classify_action(
+    user_message: str,
+    step: str,
+    options: list[str],
+    extra_context: str = "",
+) -> tuple[str, str]:
+    """
+    Lightweight LLM call that understands what the user wants in a specific
+    sub-agent step, replacing brittle keyword matching.
+
+    Args:
+        user_message: what the user typed/said
+        step: one of "caption_choice", "publish_action", "product_image", "schedule_time"
+        options: list of valid action keys to return (e.g. ["approve","regenerate","custom"])
+        extra_context: optional extra context (e.g. the caption text being reviewed)
+
+    Returns:
+        (action, value)
+        - action: one of `options`, or "unknown"
+        - value: extracted text (e.g. custom caption, schedule time) or ""
+
+    Fast path: very short single-word messages are matched without an LLM call.
+    LLM fallback: used for natural-language or ambiguous messages.
+    """
+    import re as _re
+
+    msg = (user_message or "").strip()
+    msg_lower = msg.lower()
+
+    # ── Fast path — unambiguous single-word inputs ───────────────────────────
+    _FAST = {
+        "approve":    {"approve", "yes", "✅", "ok", "okay", "yep", "great", "perfect", "good",
+                       "looks good", "looks great", "love it", "nice", "send it"},
+        "regenerate": {"regenerate", "again", "redo", "retry", "new", "different", "change",
+                       "try again", "nope", "no", "not good", "bad"},
+        "custom":     {"custom", "write", "my own", "i'll write", "let me write", "manual"},
+        "now":        {"now", "publish now", "post now", "post it", "send", "go", "yes", "yep",
+                       "yeah", "do it", "do it now", "go ahead", "upload", "publish"},
+        "schedule":   {"schedule", "later", "schedule it", "pick a time", "set time"},
+        "skip":       {"skip", "no", "nope", "generate", "scratch", "without", "ai", "no image",
+                       "no photo", "don't have", "dont have"},
+    }
+    for action, synonyms in _FAST.items():
+        if action in options and (msg_lower in synonyms or any(s in msg_lower for s in synonyms)):
+            return action, ""
+
+    # ── LLM path ─────────────────────────────────────────────────────────────
+    step_descriptions = {
+        "caption_choice": (
+            "The bot just showed the user an AI-generated caption for their post.\n"
+            "Options:\n"
+            "  approve      — user likes the caption as-is (e.g. 'looks great', 'that works', 'yes')\n"
+            "  regenerate   — user wants a new/different caption (e.g. 'try again', 'not feeling it')\n"
+            "  custom       — user says they want to write their own but hasn't written it yet\n"
+            "  custom_text  — user has already written their own caption in this message\n"
+        ),
+        "publish_action": (
+            "The bot is ready to publish a post and asking when to do it.\n"
+            "Options:\n"
+            "  now       — user wants to publish immediately (e.g. 'do it now', 'go ahead', 'yes', 'post it')\n"
+            "  schedule  — user wants to pick a specific future time\n"
+            "  cancel    — user wants to cancel or start over\n"
+        ),
+        "product_image": (
+            "The bot asked if the user wants to attach a product image for the post.\n"
+            "Options:\n"
+            "  skip      — user says to generate without a product image (e.g. 'no', 'skip', 'just create it')\n"
+            "  wait      — user is about to send an image soon\n"
+        ),
+        "schedule_time": (
+            "The user is providing a time to schedule the post.\n"
+            "Options:\n"
+            "  time      — user gave a valid date/time (extract it in `value`)\n"
+            "  unknown   — user didn't provide a clear time\n"
+        ),
+    }
+
+    step_desc = step_descriptions.get(step, f"Step: {step}. Options: {', '.join(options)}")
+    opts_str  = " | ".join(options)
+
+    system = (
+        "You are the decision brain of BeeQ, a WhatsApp social media agent. "
+        "A user is mid-flow. Understand their intent and return JSON.\n\n"
+        f"{step_desc}\n"
+        f"Return JSON: {{\"action\": \"<one of: {opts_str}>\", \"value\": \"<extracted text or empty>\"}}\n"
+        "Rules:\n"
+        "- If the user wrote an actual caption/text (not a reaction word), action=custom_text and value=that text\n"
+        "- If the message is a date/time string, action=time and value=that string\n"
+        "- If unclear, action=unknown\n"
+        "- Output ONLY the JSON, no explanation."
+    )
+    user_prompt = f"User said: \"{msg}\""
+    if extra_context:
+        user_prompt = f"Context: {extra_context}\n{user_prompt}"
+
+    try:
+        raw = _chat(system, user_prompt, temperature=0.0, max_tokens=80)
+        raw = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+        import json as _json
+        data = _json.loads(raw)
+        action = str(data.get("action") or "unknown").strip()
+        value  = str(data.get("value") or "").strip()
+        if action not in options and action not in {"custom_text", "time", "unknown"}:
+            action = "unknown"
+        return action, value
+    except Exception:
+        return "unknown", ""

@@ -184,6 +184,7 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         slide_count = int(intent.get("_slide_count", 3))
         use_style   = intent.get("use_style_skill", True)
         style_skill = (session.post_style_skill or db.get_post_style_skill(phone)) if use_style else None
+        compositor  = db.get_post_style_compositor(phone) if use_style else None
         brand       = session.brand_profile() if session.onboarding_complete else {}
         style_ctx   = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
 
@@ -239,13 +240,14 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         # Step 3: Compose carousel slides with Pillow
         _send(phone, {"kind": "text", "text": f"🖼 Rendering {total_slides} slides..."})
         slide_images = make_research_carousel(
-            content=carousel_content,
+            carousel_content=carousel_content,
             hook_image_bytes=hook_bytes,
             extra_bg_bytes=extra_bg,
             brand_colors=brand_hex,
             username=session.instagram_username or session.brand_name or "brand",
             brand_name=session.brand_name or "",
             avatar_url=session.brand_assets[0] if session.brand_assets else None,
+            style_compositor=compositor,
         )
 
         # Upload slides

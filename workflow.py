@@ -1314,13 +1314,15 @@ def _analyze_style_skill_bg(phone: str, image_url: str) -> None:
     _logger = _log.getLogger(__name__)
     try:
         result = groq_ai.analyze_post_style(image_url)
-        skill = result.get("skill", {})
-        summary = result.get("summary", "")
-        db.save_post_style_skill(phone, skill, summary)
+        skill      = result.get("skill", {})
+        compositor = result.get("compositor", {})
+        summary    = result.get("summary", "")
+        db.save_post_style_skill(phone, skill, summary, compositor=compositor)
         session = get_session(phone)
         session.post_style_skill = skill
         save_session(session)
-        _logger.info("style skill stored for %s: %s", phone, summary)
+        _logger.info("style skill stored for %s: %s | compositor keys: %s",
+                     phone, summary, list(compositor.keys()))
     except Exception as exc:
         _logger.warning("_analyze_style_skill_bg failed for %s: %s", phone, exc)
 
