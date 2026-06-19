@@ -86,23 +86,27 @@ def route(
     choice = clean.lower()
 
     # ── Detect fresh-start / reset messages ────────────────────────────────
-    # If the user is mid-agent but sends a greeting or explicit reset,
-    # clear the agent state and treat it as a new conversation.
-    _GREETINGS = {
+    # If mid-agent and user sends a greeting or short ambiguous message,
+    # clear agent state and treat as a new conversation.
+    _RESET_WORDS = {
         "hi", "hello", "hey", "hiya", "sup", "yo", "start", "restart",
         "reset", "start over", "begin", "new", "menu", "back", "cancel",
-        "stop", "exit", "done", "quit",
+        "stop", "exit", "done", "quit", "skip", "nevermind", "never mind",
+        "forget it", "nvm", "no thanks", "not now",
     }
     _in_agent = session.step in (STEP_AGENT_IMAGE_POST, STEP_AGENT_CAROUSEL,
                                   STEP_AGENT_REEL, STEP_AGENT_COLLECTING)
+    # Also reset if the sub_step is empty/None (agent stuck with no active step)
+    _sub_step = (session.agent_intent or {}).get("_sub_step", "")
+    _stuck = _in_agent and not _sub_step
     if _in_agent and not button_payload and not media_urls:
-        _is_greeting = choice in _GREETINGS
-        if _is_greeting:
+        if choice in _RESET_WORDS or _stuck:
             session.step = STEP_CHOOSE_CONTENT_TYPE
             session.agent_intent = None
             session.agent_missing_field = None
             save_session(session)
-            logger.info("harness: greeting '%s' from %s — resetting agent state", clean, phone)
+            logger.info("harness: reset trigger '%s' (stuck=%s) from %s — clearing agent state",
+                        clean, _stuck, phone)
             return _ask_what_to_create(phone, session)
 
     # ── If we're inside a sub-agent step, delegate directly ────────────────

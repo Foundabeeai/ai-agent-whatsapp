@@ -172,6 +172,9 @@ def handle_step(
             return {"kind": "none"}
         return {"kind": "text", "text": "⏰ When? (e.g. *tomorrow 9am*)"}
 
+    # Unknown sub_step — only restart if nothing generated yet
+    if intent.get("_image_urls") or intent.get("_caption"):
+        return {"kind": "text", "text": "✅ *approve* · ✏️ custom caption · 🔄 *regenerate*"}
     return start(phone, session, intent)
 
 

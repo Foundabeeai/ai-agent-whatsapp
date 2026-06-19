@@ -279,7 +279,9 @@ def handle_step(
             return start(phone, session, intent)
         return {"kind": "text", "text": "What's this post about?"}
 
-    # Unknown sub-step → restart
+    # Unknown sub-step — only restart if nothing generated yet
+    if intent.get("_image_urls") or intent.get("_caption"):
+        return {"kind": "text", "text": "✅ *approve* · ✏️ custom caption · 🔄 *regenerate*"}
     return start(phone, session, intent)
 
 
