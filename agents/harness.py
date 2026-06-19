@@ -85,6 +85,26 @@ def route(
     clean = (body or "").strip()
     choice = clean.lower()
 
+    # ── Detect fresh-start / reset messages ────────────────────────────────
+    # If the user is mid-agent but sends a greeting or explicit reset,
+    # clear the agent state and treat it as a new conversation.
+    _GREETINGS = {
+        "hi", "hello", "hey", "hiya", "sup", "yo", "start", "restart",
+        "reset", "start over", "begin", "new", "menu", "back", "cancel",
+        "stop", "exit", "done", "quit",
+    }
+    _in_agent = session.step in (STEP_AGENT_IMAGE_POST, STEP_AGENT_CAROUSEL,
+                                  STEP_AGENT_REEL, STEP_AGENT_COLLECTING)
+    if _in_agent and not button_payload and not media_urls:
+        _is_greeting = choice in _GREETINGS
+        if _is_greeting:
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            session.agent_intent = None
+            session.agent_missing_field = None
+            save_session(session)
+            logger.info("harness: greeting '%s' from %s — resetting agent state", clean, phone)
+            return _ask_what_to_create(phone, session)
+
     # ── If we're inside a sub-agent step, delegate directly ────────────────
     if session.step == STEP_AGENT_IMAGE_POST:
         return image_post_agent.handle_step(phone, session, clean, button_payload,
