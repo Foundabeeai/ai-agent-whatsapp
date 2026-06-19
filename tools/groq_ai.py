@@ -713,9 +713,19 @@ def extract_full_intent(
     try:
         clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
         data = _json.loads(clean)
+        # Normalise content_type — LLM sometimes returns "post", "image", "video" etc.
+        _ct_raw = str(data.get("content_type") or "unknown").lower().strip()
+        _ct_map = {
+            "image_post": "image_post", "image post": "image_post",
+            "image": "image_post", "post": "image_post", "photo": "image_post",
+            "single": "image_post", "single post": "image_post",
+            "carousel": "carousel", "slides": "carousel", "swipe": "carousel",
+            "reel": "reel", "video": "reel", "reels": "reel",
+        }
+        _ct = _ct_map.get(_ct_raw, "unknown")
         # Ensure required keys with safe defaults
         return {
-            "content_type":        str(data.get("content_type") or "unknown"),
+            "content_type":        _ct,
             "confidence":          float(data.get("confidence") or 0.5),
             "description":         str(data.get("description") or "").strip(),
             "count":               int(data.get("count") or 1),
