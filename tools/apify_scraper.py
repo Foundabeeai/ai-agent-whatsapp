@@ -21,6 +21,7 @@ Public API:
 from __future__ import annotations
 
 import logging
+import re
 
 import requests
 
@@ -53,41 +54,89 @@ def _run_actor(actor: str, payload: dict) -> list[dict]:
     return data or []
 
 
-def _extract_photos(item: dict) -> list[str]:
-    """Pull high-res photo URLs from a Zillow property record (schema varies)."""
-    urls: list[str] = []
+_IMG_RE = re.compile(r"https?://[^\s\"'<>]+?\.(?:jpg|jpeg|png|webp)", re.IGNORECASE)
+# Zillow photo URLs look like .../fp/<hash>-cc_ft_768.jpg — the size token at the
+# end varies per resolution of the SAME photo. Strip it to group variants.
+_SIZE_TOKEN_RE = re.compile(r"[-_](?:cc_ft_|p_|e_)?\d{2,4}(?=\.(?:jpg|jpeg|png|webp))", re.IGNORECASE)
 
-    # Common shapes returned by Zillow actors
-    photos = item.get("photos") or item.get("responsivePhotos") or item.get("images") or []
-    for p in photos:
-        if isinstance(p, str):
-            urls.append(p)
-        elif isinstance(p, dict):
-            # responsivePhotos → {"mixedSources": {"jpeg": [{"url": ...}]}}
-            mixed = p.get("mixedSources") or {}
-            jpegs = mixed.get("jpeg") or mixed.get("webp") or []
-            if jpegs:
-                # last entry is usually the highest resolution
-                best = jpegs[-1]
-                if isinstance(best, dict) and best.get("url"):
-                    urls.append(best["url"])
-            elif p.get("url"):
-                urls.append(p["url"])
 
-    # Fallback single hero image
-    for key in ("imgSrc", "image", "hiResImageLink", "desktopWebHdpImageLink"):
-        v = item.get(key)
-        if isinstance(v, str) and v.startswith("http"):
-            urls.append(v)
+def _photo_key(url: str) -> str:
+    """Collapse size variants of the same Zillow photo to one key."""
+    return _SIZE_TOKEN_RE.sub("", url.split("?")[0])
 
-    # Dedupe, keep order
-    seen: set[str] = set()
-    out: list[str] = []
-    for u in urls:
-        if u and u.startswith("http") and u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
+
+def _walk_image_urls(obj) -> list[str]:
+    """Recursively collect every image URL anywhere in the record."""
+    found: list[str] = []
+    if isinstance(obj, str):
+        if obj.startswith("http") and _IMG_RE.match(obj):
+            found.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            found.extend(_walk_image_urls(v))
+    elif isinstance(obj, list):
+        for v in obj:
+            found.extend(_walk_image_urls(v))
+    return found
+
+
+def _extract_photos(item: dict, limit: int = 8) -> list[str]:
+    """
+    Pull DISTINCT high-res photo URLs from a Zillow record. Schema varies wildly
+    across actors, so we collect every image URL in the record, group the
+    resolution-variants of each photo, and keep the largest variant per photo.
+    """
+    # 1. Structured arrays (best res per photo) — common key names
+    structured: list[str] = []
+    for key in ("photos", "responsivePhotos", "originalPhotos", "hugePhotos",
+                "carouselPhotos", "images", "galleryPhotos"):
+        arr = item.get(key)
+        if not isinstance(arr, list):
+            continue
+        for p in arr:
+            if isinstance(p, str) and p.startswith("http"):
+                structured.append(p)
+            elif isinstance(p, dict):
+                mixed = p.get("mixedSources") or {}
+                jpegs = mixed.get("jpeg") or mixed.get("webp") or []
+                if jpegs and isinstance(jpegs, list):
+                    best = jpegs[-1]  # last = highest res
+                    if isinstance(best, dict) and best.get("url"):
+                        structured.append(best["url"])
+                for k in ("url", "src", "href", "image"):
+                    v = p.get(k)
+                    if isinstance(v, str) and v.startswith("http"):
+                        structured.append(v)
+
+    # 2. Deep scan as a safety net (catches any nesting we didn't name)
+    deep = _walk_image_urls(item)
+
+    # 3. Group by photo identity, keep the LARGEST variant of each distinct photo
+    best_by_photo: dict[str, str] = {}
+    def _size_hint(u: str) -> int:
+        m = re.search(r"(\d{2,4})(?=\.(?:jpg|jpeg|png|webp))", u, re.IGNORECASE)
+        return int(m.group(1)) if m else 0
+
+    for u in structured + deep:
+        # skip obvious non-photo assets
+        low = u.lower()
+        if any(b in low for b in ("logo", "icon", "sprite", "badge", "pixel",
+                                  "map", "static-maps", "googleapis", "streetview")):
+            continue
+        key = _photo_key(u)
+        if key not in best_by_photo or _size_hint(u) > _size_hint(best_by_photo[key]):
+            best_by_photo[key] = u
+
+    photos = list(best_by_photo.values())
+
+    # 4. Fallback single hero image if nothing else
+    if not photos:
+        for key in ("imgSrc", "image", "hiResImageLink", "desktopWebHdpImageLink"):
+            v = item.get(key)
+            if isinstance(v, str) and v.startswith("http"):
+                photos.append(v)
+
+    return photos[:limit]
 
 
 def _build_summary(item: dict) -> str:
