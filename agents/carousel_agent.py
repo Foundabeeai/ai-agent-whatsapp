@@ -187,14 +187,21 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         brand       = session.brand_profile() if session.onboarding_complete else {}
         style_ctx   = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
 
+        # Scraped context from URL (if user provided a link)
+        scraped_imgs  = intent.get("_scraped_image_urls", [])
+        scraped_summaries = intent.get("_scraped_summaries", [])
+        scraped_ctx = ("\n\nAdditional context from linked URL:\n" + "\n".join(scraped_summaries)
+                       if scraped_summaries else "")
+
         # Step 1: Generate carousel content (research + hook)
         _send(phone, {"kind": "text", "text": "📊 Researching data and crafting slides..."})
+        enriched_description = description + scraped_ctx
         carousel_content = groq_ai.generate_research_carousel_content(
-            topic=description, brand=brand, slide_count=slide_count
+            topic=enriched_description, brand=brand, slide_count=slide_count
         )
         brand_hex = groq_ai.get_brand_hex_colors(session.brand_colors or "")
 
-        # Step 2: Generate background images
+        # Step 2: Generate background images (use scraped images as references if available)
         total_slides = 1 + slide_count
         n_bg = max(1, total_slides // 2)
         _send(phone, {"kind": "text", "text": f"🎨 Generating {n_bg} background image(s)..."})
@@ -203,6 +210,11 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         hook_bytes: Optional[bytes] = None
         extra_bg: list[bytes] = []
 
+        # Prefer scraped images as reference backgrounds, fall back to brand assets
+        ref_images = scraped_imgs[:3] if scraped_imgs else (
+            [session.brand_assets[0]] if session.brand_assets else None
+        )
+
         brand_with_style = {**brand, "_style_context": style_ctx} if style_ctx else brand
         for bi in range(n_bg):
             bg_prompt = (
@@ -210,7 +222,8 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
                 f"Brand colors: {session.brand_colors or 'professional dark tones'}. "
                 "No text, no logos, dramatic commercial lighting, magazine quality."
             )
-            ref = [session.brand_assets[0]] if session.brand_assets else None
+            # Rotate through scraped reference images
+            ref = [ref_images[bi % len(ref_images)]] if ref_images else None
             gen = image_gen.generate_image(bg_prompt, aspect_ratio="1:1", reference_urls=ref)
             if gen.get("ok"):
                 r = _req.get(gen["url"], timeout=30)

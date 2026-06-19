@@ -396,13 +396,20 @@ def _generate_no_image_bg(phone: str, session: UserSession, intent: dict) -> Non
         style_ctx = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
         brand_with_style = {**brand, "_style_context": style_ctx} if style_ctx else brand
 
-        full_desc = description
+        # Use scraped URL context if available
+        scraped_imgs      = intent.get("_scraped_image_urls", [])
+        scraped_summaries = intent.get("_scraped_summaries", [])
+        scraped_ctx = ("\n\nContext from linked URL:\n" + "\n".join(scraped_summaries)
+                       if scraped_summaries else "")
+
+        full_desc = description + scraped_ctx
         if style_notes:
             full_desc += f" ({style_notes})"
 
         prompts = groq_ai.generate_image_prompts(full_desc, count=count, brand=brand_with_style)
 
-        ref_urls = session.brand_assets[:1] if session.brand_assets else None
+        # Prefer scraped images as reference, fall back to brand assets
+        ref_urls = scraped_imgs[:1] if scraped_imgs else (session.brand_assets[:1] if session.brand_assets else None)
         gen = image_gen.generate_images(prompts, content_type="image_post", reference_urls=ref_urls)
         if not gen.get("ok"):
             raise RuntimeError(gen.get("error", "generation failed"))
@@ -413,8 +420,9 @@ def _generate_no_image_bg(phone: str, session: UserSession, intent: dict) -> Non
 
         s3_urls = _stamp_images(s3_urls, session=session, user_id=user_id)
 
+        caption_desc = description + scraped_ctx
         caption = groq_ai.generate_caption_with_style(
-            description, "image_post",
+            caption_desc, "image_post",
             website_url=session.website_url or "",
             style_skill=style_skill,
         )

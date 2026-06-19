@@ -1,0 +1,225 @@
+"""
+Scrape a URL for text content + images and return structured context
+that can be injected into agent intent.
+
+Used by the harness when a user includes a link in their message — e.g.
+"create a carousel for my property listing www.zillow.com/..."
+
+Returns:
+  {
+    "url":          str,
+    "title":        str,
+    "summary":      str,   # LLM-condensed key facts (≤300 words)
+    "raw_text":     str,   # full scraped text (truncated to 4000 chars)
+    "image_urls":   list[str],   # S3 presigned URLs of scraped images
+    "ok":           bool,
+    "error":        str | None,
+  }
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import urllib.parse
+from typing import Optional
+
+import requests
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
+
+_TIMEOUT = 20
+_MAX_TEXT = 4000
+_MAX_IMAGES = 6
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+_SKIP_IMG = re.compile(
+    r"(icon|logo|avatar|sprite|pixel|badge|button|emoji|thumb(?:nail)?|\.gif|1x1|tracking)",
+    re.IGNORECASE,
+)
+
+
+def _abs(url: str, base: str) -> str:
+    return urllib.parse.urljoin(base, url)
+
+
+def _fetch_html(url: str) -> tuple[str, str]:
+    """Returns (html, final_url). Falls back to Playwright for JS-heavy pages."""
+    try:
+        r = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, allow_redirects=True)
+        r.raise_for_status()
+        return r.text, r.url
+    except Exception:
+        pass
+
+    # Playwright fallback for JS-rendered pages (Zillow, Instagram, etc.)
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_extra_http_headers(_HEADERS)
+            page.goto(url, timeout=25_000, wait_until="networkidle")
+            html = page.content()
+            final_url = page.url
+            browser.close()
+            return html, final_url
+    except Exception as exc:
+        raise RuntimeError(f"Both requests and Playwright failed: {exc}") from exc
+
+
+def _extract_text(soup: BeautifulSoup) -> str:
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+        tag.decompose()
+
+    # Prefer article/main/section content
+    container = soup.find("article") or soup.find("main") or soup.find("body") or soup
+    lines = []
+    for el in container.find_all(["h1", "h2", "h3", "h4", "p", "li", "td", "span"]):
+        t = el.get_text(" ", strip=True)
+        if t and len(t) > 20:
+            lines.append(t)
+
+    text = "\n".join(lines)
+    return text[:_MAX_TEXT]
+
+
+def _extract_images(soup: BeautifulSoup, base_url: str) -> list[str]:
+    candidates: list[str] = []
+
+    # og:image first
+    for meta in soup.find_all("meta", property=re.compile(r"^og:image")):
+        c = meta.get("content", "")
+        if c:
+            candidates.append(_abs(c, base_url))
+
+    # <img> tags
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or ""
+        if not src:
+            # try srcset
+            srcset = img.get("srcset", "")
+            if srcset:
+                src = srcset.split(",")[0].strip().split(" ")[0]
+        if not src:
+            continue
+        abs_src = _abs(src, base_url)
+        if _SKIP_IMG.search(abs_src):
+            continue
+        candidates.append(abs_src)
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for u in candidates:
+        if u not in seen and u.startswith("http"):
+            seen.add(u)
+            unique.append(u)
+
+    return unique[:_MAX_IMAGES]
+
+
+def _upload_images(image_urls: list[str], phone: str) -> list[str]:
+    """Download each image and upload to S3. Returns presigned S3 URLs."""
+    from tools.aws_storage import upload_from_url
+    s3_urls: list[str] = []
+    for url in image_urls:
+        try:
+            result = upload_from_url(url, user_id=phone, media_kind="scraped")
+            if result.get("ok"):
+                s3_urls.append(result["s3_url"])
+        except Exception as exc:
+            logger.debug("Failed to upload scraped image %s: %s", url, exc)
+    return s3_urls
+
+
+def _summarize_text(title: str, raw_text: str, url: str) -> str:
+    """Use Groq to condense scraped text into key facts (≤200 words)."""
+    try:
+        from tools.groq_ai import _chat
+        prompt = (
+            f"URL: {url}\nPage title: {title}\n\n"
+            f"Scraped text:\n{raw_text[:3000]}\n\n"
+            "Extract key facts from this page in ≤200 words. "
+            "Focus on: what is being sold/promoted, price, location, key features, "
+            "any unique selling points. Be specific. No fluff."
+        )
+        resp = _chat([{"role": "user", "content": prompt}], max_tokens=300, temperature=0.0)
+        return resp.strip()
+    except Exception:
+        return raw_text[:500]
+
+
+def scrape_url(url: str, phone: str) -> dict:
+    """
+    Full pipeline: fetch page → extract text + images → upload images to S3
+    → summarize text with LLM. Returns structured context dict.
+    """
+    try:
+        html, final_url = _fetch_html(url)
+    except Exception as exc:
+        return {"url": url, "ok": False, "error": str(exc),
+                "title": "", "summary": "", "raw_text": "", "image_urls": []}
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    title = ""
+    title_tag = soup.find("title")
+    if title_tag:
+        title = title_tag.get_text(strip=True)
+    og_title = soup.find("meta", property="og:title")
+    if og_title and og_title.get("content"):
+        title = og_title["content"]
+
+    raw_text = _extract_text(soup)
+    raw_image_urls = _extract_images(soup, final_url)
+
+    summary = _summarize_text(title, raw_text, final_url)
+    s3_image_urls = _upload_images(raw_image_urls, phone)
+
+    return {
+        "url":        final_url,
+        "title":      title,
+        "summary":    summary,
+        "raw_text":   raw_text,
+        "image_urls": s3_image_urls,
+        "ok":         True,
+        "error":      None,
+    }
+
+
+def extract_urls(text: str) -> list[str]:
+    """Pull all http/https URLs out of a text string."""
+    return re.findall(r"https?://[^\s\)\]\>\"\']+", text)
+
+
+def extract_bare_urls(text: str) -> list[str]:
+    """
+    Also catch bare domain URLs like www.zillow.com/... that lack http://.
+    Returns them with https:// prepended.
+    """
+    bare = re.findall(r"\bwww\.[^\s\)\]\>\"\']+", text)
+    return [f"https://{u}" for u in bare]
+
+
+def find_all_urls(text: str) -> list[str]:
+    """Find all URLs (http/https + bare www.) in text, deduplicated."""
+    all_urls = extract_urls(text) + extract_bare_urls(text)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for u in all_urls:
+        clean = u.rstrip(".,;!?)")
+        if clean not in seen:
+            seen.add(clean)
+            unique.append(clean)
+    return unique

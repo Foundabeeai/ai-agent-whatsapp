@@ -33,6 +33,14 @@ from tools import groq_ai
 
 logger = logging.getLogger(__name__)
 
+
+def _send_scraping_notice(phone: str) -> None:
+    from workflow import _send_async
+    _send_async(phone, {
+        "kind": "text",
+        "text": "🔍 Found a link — scraping content and images from it now...",
+    })
+
 # ── Steps that the harness owns (returned users only) ─────────────────────
 HARNESS_STEPS = {
     STEP_CHOOSE_CONTENT_TYPE,  # legacy entry — harness intercepts this
@@ -102,19 +110,56 @@ def route(
     if not clean and not audio_transcript and not has_image and not has_video:
         return _ask_what_to_create(phone, session)
 
+    # Detect URLs in the message/transcript and scrape them immediately
+    from tools.url_context import find_all_urls, scrape_url as _scrape_url
+    full_text = " ".join(filter(None, [clean, audio_transcript]))
+    found_urls = find_all_urls(full_text)
+    scraped_contexts: list[dict] = []
+    if found_urls:
+        _send_scraping_notice(phone)
+        for u in found_urls[:2]:  # cap at 2 URLs per message
+            logger.info("harness: scraping URL %s for %s", u, phone)
+            ctx_data = _scrape_url(u, phone)
+            if ctx_data.get("ok"):
+                scraped_contexts.append(ctx_data)
+                logger.info("harness: scraped %s — %d images, summary len=%d",
+                            u, len(ctx_data["image_urls"]), len(ctx_data["summary"]))
+            else:
+                logger.warning("harness: scrape failed for %s: %s", u, ctx_data.get("error"))
+
+    # Build enriched text for intent extraction
+    enriched_text = clean
+    if scraped_contexts:
+        enriched_text += "\n\n[SCRAPED URL CONTEXT — use this as the primary content source:]"
+        for sc in scraped_contexts:
+            enriched_text += (
+                f"\nURL: {sc['url']}\nTitle: {sc['title']}\nKey facts: {sc['summary']}\n"
+            )
+
     # Extract full intent in one shot
     intent = groq_ai.extract_full_intent(
-        text_body=clean,
+        text_body=enriched_text,
         audio_transcript=audio_transcript,
         has_image=has_image,
         has_video=has_video,
         session_context=ctx,
     )
 
-    # Attach media urls to the intent so sub-agents can pick them up
+    # Attach media urls and scraped images to the intent so sub-agents can pick them up
     intent["_media_urls"]  = media_urls
     intent["_media_types"] = media_types
     intent["_voice_confirmed"] = voice_confirmed
+
+    # Merge scraped images into media_urls so agents treat them as reference images
+    if scraped_contexts:
+        all_scraped_imgs = []
+        for sc in scraped_contexts:
+            all_scraped_imgs.extend(sc["image_urls"])
+        intent["_scraped_image_urls"] = all_scraped_imgs
+        intent["_scraped_summaries"]  = [sc["summary"] for sc in scraped_contexts]
+        # If user didn't attach an image but we scraped some, mark as having scraped refs
+        if all_scraped_imgs and not has_image:
+            intent["_has_scraped_images"] = True
 
     logger.info(
         "harness intent for %s: type=%s confidence=%.2f ready=%s missing=%s",
