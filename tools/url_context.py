@@ -94,29 +94,42 @@ def _extract_text(soup: BeautifulSoup) -> str:
     return text[:_MAX_TEXT]
 
 
-def _extract_images(soup: BeautifulSoup, base_url: str) -> list[str]:
+def _extract_images(soup: BeautifulSoup, base_url: str, html: str = "") -> list[str]:
     candidates: list[str] = []
 
-    # og:image first
+    # 1. og:image / twitter:image meta tags
     for meta in soup.find_all("meta", property=re.compile(r"^og:image")):
         c = meta.get("content", "")
         if c:
             candidates.append(_abs(c, base_url))
+    for meta in soup.find_all("meta", attrs={"name": re.compile(r"twitter:image")}):
+        c = meta.get("content", "")
+        if c:
+            candidates.append(_abs(c, base_url))
 
-    # <img> tags
+    # 2. <img> tags
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or ""
         if not src:
-            # try srcset
             srcset = img.get("srcset", "")
             if srcset:
-                src = srcset.split(",")[0].strip().split(" ")[0]
+                src = srcset.split(",")[-1].strip().split(" ")[0]  # last = highest res
         if not src:
             continue
         abs_src = _abs(src, base_url)
         if _SKIP_IMG.search(abs_src):
             continue
         candidates.append(abs_src)
+
+    # 3. JSON blobs in the raw HTML — JS-heavy sites (Zillow, Airbnb, etc.) embed
+    #    their photo CDN URLs inside <script> JSON (__NEXT_DATA__, JSON-LD, etc.).
+    #    Grep for high-res image URLs directly.
+    blob = html or str(soup)
+    for m in re.findall(r'https?:\\?/\\?/[^\s"\'<>]+?\.(?:jpg|jpeg|png|webp)', blob, re.IGNORECASE):
+        clean_url = m.replace("\\/", "/").replace("\\u002F", "/")
+        if _SKIP_IMG.search(clean_url):
+            continue
+        candidates.append(clean_url)
 
     # Deduplicate while preserving order
     seen: set[str] = set()
@@ -126,7 +139,7 @@ def _extract_images(soup: BeautifulSoup, base_url: str) -> list[str]:
             seen.add(u)
             unique.append(u)
 
-    return unique[:_MAX_IMAGES]
+    return unique[:_MAX_IMAGES * 4]  # over-collect; quality filter trims later
 
 
 # Quality thresholds for scraped images
@@ -227,8 +240,28 @@ def scrape_url(url: str, phone: str) -> dict:
         title = og_title["content"]
 
     raw_text = _extract_text(soup)
-    raw_image_urls = _extract_images(soup, final_url)
 
+    # Detect bot-blocked / access-denied pages (Zillow, LinkedIn, etc. use PerimeterX
+    # and friends). These return a tiny denial page with no usable content.
+    _blocked_markers = (
+        "access to this page has been denied", "access denied",
+        "are you a robot", "verify you are human", "captcha",
+        "enable javascript and cookies", "request unsuccessful",
+    )
+    combined_low = (title + " " + raw_text).lower()
+    is_blocked = (
+        any(m in combined_low for m in _blocked_markers)
+        or len(raw_text.strip()) < 80
+    )
+    if is_blocked:
+        logger.warning("url_context: %s appears bot-blocked or empty (text len=%d)",
+                       final_url, len(raw_text.strip()))
+        return {
+            "url": final_url, "ok": False, "error": "blocked",
+            "title": title, "summary": "", "raw_text": raw_text, "image_urls": [],
+        }
+
+    raw_image_urls = _extract_images(soup, final_url, html=html)
     summary = _summarize_text(title, raw_text, final_url)
     s3_image_urls = _upload_images(raw_image_urls, phone)
 

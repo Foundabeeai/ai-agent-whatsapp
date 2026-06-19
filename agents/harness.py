@@ -41,6 +41,20 @@ def _send_scraping_notice(phone: str) -> None:
         "text": "🔍 Found a link — scraping content and images from it now...",
     })
 
+
+def _send_blocked_notice(phone: str) -> None:
+    from workflow import _send_async
+    _send_async(phone, {
+        "kind": "text",
+        "text": (
+            "⚠️ That site blocks automated access (Zillow, LinkedIn and a few others do this), "
+            "so I couldn't pull its photos or details.\n\n"
+            "No problem — I'll create the post from your description. "
+            "For an accurate result, you can also *send me a photo or two* of the property "
+            "and I'll build around them. 🏡"
+        ),
+    })
+
 # ── Steps that the harness owns (returned users only) ─────────────────────
 HARNESS_STEPS = {
     STEP_CHOOSE_CONTENT_TYPE,  # legacy entry — harness intercepts this
@@ -150,6 +164,7 @@ def route(
     full_text = " ".join(filter(None, [clean, audio_transcript]))
     found_urls = find_all_urls(full_text)
     scraped_contexts: list[dict] = []
+    _any_blocked = False
     if found_urls:
         _send_scraping_notice(phone)
         for u in found_urls[:2]:  # cap at 2 URLs per message
@@ -160,7 +175,11 @@ def route(
                 logger.info("harness: scraped %s — %d images, summary len=%d",
                             u, len(ctx_data["image_urls"]), len(ctx_data["summary"]))
             else:
+                _any_blocked = _any_blocked or ctx_data.get("error") == "blocked"
                 logger.warning("harness: scrape failed for %s: %s", u, ctx_data.get("error"))
+        # Tell the user honestly if the link couldn't be accessed
+        if _any_blocked and not scraped_contexts:
+            _send_blocked_notice(phone)
 
     # Build enriched text for intent extraction
     enriched_text = clean
@@ -185,6 +204,9 @@ def route(
     intent["_media_types"] = media_types
     intent["_voice_confirmed"] = voice_confirmed
 
+    # Flag that the user provided a link — agents must NOT ask for an image in this case
+    intent["_url_provided"] = bool(found_urls)
+
     # Merge scraped images into media_urls so agents treat them as reference images
     if scraped_contexts:
         all_scraped_imgs = []
@@ -192,7 +214,6 @@ def route(
             all_scraped_imgs.extend(sc["image_urls"])
         intent["_scraped_image_urls"] = all_scraped_imgs
         intent["_scraped_summaries"]  = [sc["summary"] for sc in scraped_contexts]
-        # If user didn't attach an image but we scraped some, mark as having scraped refs
         if all_scraped_imgs and not has_image:
             intent["_has_scraped_images"] = True
 
@@ -260,12 +281,17 @@ def _handle_collecting(
     from tools.url_context import find_all_urls, scrape_url as _scrape_url
     found_urls = find_all_urls(clean)
     scraped_contexts: list[dict] = []
+    _any_blocked = False
     if found_urls:
         _send_scraping_notice(phone)
         for u in found_urls[:2]:
             ctx_data = _scrape_url(u, phone)
             if ctx_data.get("ok"):
                 scraped_contexts.append(ctx_data)
+            else:
+                _any_blocked = _any_blocked or ctx_data.get("error") == "blocked"
+        if _any_blocked and not scraped_contexts:
+            _send_blocked_notice(phone)
 
     # Re-run intent extraction with the previous partial merged into the prompt
     ctx = _session_context(session)
@@ -294,6 +320,8 @@ def _handle_collecting(
     new_intent["_media_urls"]  = media_urls or partial.get("_media_urls", [])
     new_intent["_media_types"] = media_types or partial.get("_media_types", [])
     new_intent["_voice_confirmed"] = voice_confirmed
+    # A link given now OR earlier in this conversation means: don't ask for an image
+    new_intent["_url_provided"] = bool(found_urls) or partial.get("_url_provided", False)
     if scraped_contexts:
         all_imgs = [img for sc in scraped_contexts for img in sc["image_urls"]]
         new_intent["_scraped_image_urls"] = all_imgs

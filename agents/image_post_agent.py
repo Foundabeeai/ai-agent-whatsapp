@@ -89,23 +89,30 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
         _send(phone, {"kind": "text", "text": "🚀 Got it! Sending to the art director now..."})
         return {"kind": "none"}
 
-    # Scraped images from a link the user shared → use the best one as the base, no need to ask
-    if scraped_imgs and not has_image:
+    # User shared a link → never ask for an image.
+    # Use scraped photos as the base if we got any; otherwise generate from scratch
+    # using the scraped text context. Either way, go straight to generation.
+    url_provided = intent.get("_url_provided", False)
+    if (scraped_imgs or url_provided) and not has_image:
         intent["_sub_step"] = "generating"
         session.agent_intent = intent
         save_session(session)
-        threading.Thread(
-            target=_generate_with_image_bg,
-            args=(phone, session, intent, [], []),
-            daemon=True,
-        ).start()
-        _send(phone, {
-            "kind": "text",
-            "text": (
-                f"🔗 Got it — using the photos from your link as the base.\n"
-                f"🎨 Creating your post: _{description}_\n⏱ ~90 seconds ☕"
-            ),
-        }, tts=voice_ok)
+        if scraped_imgs:
+            threading.Thread(
+                target=_generate_with_image_bg,
+                args=(phone, session, intent, [], []),
+                daemon=True,
+            ).start()
+            msg = (f"🔗 Got it — using the photos from your link as the base.\n"
+                   f"🎨 Creating your post: _{description}_\n⏱ ~90 seconds ☕")
+        else:
+            threading.Thread(
+                target=_generate_no_image_bg,
+                args=(phone, session, intent),
+                daemon=True,
+            ).start()
+            msg = (f"🎨 Creating your post: _{description}_\n⏱ ~90 seconds ☕")
+        _send(phone, {"kind": "text", "text": msg}, tts=voice_ok)
         return {"kind": "none"}
 
     # No product image but user might want to provide one
