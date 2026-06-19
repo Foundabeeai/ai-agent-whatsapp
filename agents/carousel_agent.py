@@ -82,8 +82,9 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
 def _begin_carousel_generation(phone: str, session: UserSession, intent: dict, voice_ok: bool) -> None:
     """Kick off carousel generation with whatever inputs we've collected."""
     description = intent.get("description", "").strip()
-    slide_count = max(1, int(intent.get("_slide_count") or intent.get("count") or 4))
-    intent["_slide_count"] = slide_count
+    # The user's number is the TOTAL number of slides they want (cover included).
+    total_slides = max(2, int(intent.get("_slide_count") or intent.get("count") or 4))
+    intent["_slide_count"] = total_slides
 
     has_photos = bool(intent.get("_scraped_image_urls")) or bool(
         intent.get("_media_urls") and any(t.startswith("image/") for t in intent.get("_media_types", [])))
@@ -93,8 +94,8 @@ def _begin_carousel_generation(phone: str, session: UserSession, intent: dict, v
         "kind": "text",
         "text": (
             f"📑 *Creating carousel:* _{description}_\n"
-            f"{src_line} · {slide_count} slides + hook\n"
-            f"⏱ ~{(slide_count + 1) * 2} minutes ☕"
+            f"{src_line} · {total_slides} slides\n"
+            f"⏱ ~{total_slides * 2} minutes ☕"
         ),
     }, tts=voice_ok)
 
@@ -272,7 +273,9 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
     try:
         user_id     = session.verified_user_id or phone
         description = intent.get("description", "")
-        slide_count = int(intent.get("_slide_count", 3))
+        # _slide_count is the TOTAL slides the user wants (cover + content).
+        total_requested = max(2, int(intent.get("_slide_count", 4)))
+        slide_count = total_requested - 1   # content slides (cover/hook is the +1)
         use_style   = intent.get("use_style_skill", True)
         style_skill = (session.post_style_skill or db.get_post_style_skill(phone)) if use_style else None
         compositor  = db.get_post_style_compositor(phone) if use_style else None
