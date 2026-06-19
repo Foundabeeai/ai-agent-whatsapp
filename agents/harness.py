@@ -85,6 +85,14 @@ def route(
     clean = (body or "").strip()
     choice = clean.lower()
 
+    # ── Map legacy numbered menu choices into natural language ──────────────
+    # Users sometimes reply "1", "2", "3" from old menus or habit.
+    _NUM_MAP = {"1": "image post", "2": "carousel", "3": "reel",
+                "📸": "image post", "🎠": "carousel", "🎬": "reel"}
+    if choice in _NUM_MAP and not button_payload:
+        clean = _NUM_MAP[choice]
+        choice = clean
+
     # ── Detect fresh-start / reset messages ────────────────────────────────
     # If mid-agent and user sends a greeting or short ambiguous message,
     # clear agent state and treat as a new conversation.
@@ -245,6 +253,17 @@ def _handle_collecting(
     has_image = any(t.startswith("image/") for t in media_types)
     has_video = any(t.startswith("video/") for t in media_types)
 
+    # Scrape any URLs in this follow-up message too
+    from tools.url_context import find_all_urls, scrape_url as _scrape_url
+    found_urls = find_all_urls(clean)
+    scraped_contexts: list[dict] = []
+    if found_urls:
+        _send_scraping_notice(phone)
+        for u in found_urls[:2]:
+            ctx_data = _scrape_url(u, phone)
+            if ctx_data.get("ok"):
+                scraped_contexts.append(ctx_data)
+
     # Re-run intent extraction with the previous partial merged into the prompt
     ctx = _session_context(session)
     prior_desc = partial.get("description", "")
@@ -256,6 +275,10 @@ def _handle_collecting(
         combined = f"Content type: {prior_ct}. " + combined
     if prior_desc and prior_desc not in combined:
         combined = f"Topic: {prior_desc}. " + combined
+    if scraped_contexts:
+        combined += "\n\n[SCRAPED URL CONTEXT:]"
+        for sc in scraped_contexts:
+            combined += f"\nURL: {sc['url']}\nTitle: {sc['title']}\nKey facts: {sc['summary']}\n"
 
     new_intent = groq_ai.extract_full_intent(
         text_body=combined,
@@ -264,15 +287,21 @@ def _handle_collecting(
         has_video=has_video,
         session_context=ctx,
     )
-    # Carry forward media from original intent
+    # Carry forward media and scraped context from original intent
     new_intent["_media_urls"]  = media_urls or partial.get("_media_urls", [])
     new_intent["_media_types"] = media_types or partial.get("_media_types", [])
     new_intent["_voice_confirmed"] = voice_confirmed
+    if scraped_contexts:
+        all_imgs = [img for sc in scraped_contexts for img in sc["image_urls"]]
+        new_intent["_scraped_image_urls"] = all_imgs
+        new_intent["_scraped_summaries"]  = [sc["summary"] for sc in scraped_contexts]
+    else:
+        new_intent["_scraped_image_urls"] = partial.get("_scraped_image_urls", [])
+        new_intent["_scraped_summaries"]  = partial.get("_scraped_summaries", [])
 
     ct = new_intent["content_type"]
 
     if ct == "unknown" or not new_intent["ready_to_generate"]:
-        # Still not enough — ask again (cap at 2 tries to avoid infinite loops)
         session.agent_intent = new_intent
         session.agent_missing_field = ", ".join(new_intent["missing_fields"])
         save_session(session)

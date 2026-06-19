@@ -1535,6 +1535,13 @@ def handle_incoming_message(
             (choice in _reset_words or any(w in choice for w in _reset_words))):
         session.reset_flow()
         session.bg_status = ""
+        # Route into harness if user is onboarded, otherwise show old menu
+        if session.onboarding_complete:
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            session.agent_intent = None
+            session.agent_missing_field = None
+            save_session(session)
+            return {"kind": "text", "text": "🔄 No problem — let's start fresh! What would you like to create?"}
         save_session(session)
         from tools.whatsapp import send_content_type_menu as _ctm
         _start_bg(_ctm, phone)
