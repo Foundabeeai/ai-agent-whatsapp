@@ -152,30 +152,15 @@ def handle_step(
     media_types: list[str],
     voice_confirmed: bool,
 ) -> dict:
+    from tools.groq_ai import classify_action
+
     intent   = session.agent_intent or {}
     sub_step = intent.get("_sub_step", "")
-    choice   = (button_payload or clean).lower().strip()
+    msg      = (button_payload or clean or "").strip()
 
     # ── Waiting for product image ──────────────────────────────────────────
     if sub_step == "awaiting_product_image":
         has_image = bool(media_urls and any(t.startswith("image/") for t in media_types))
-
-        if choice == "skip" or (not has_image and choice):
-            # Generate from scratch
-            intent["use_reference_image"] = False
-            intent["_sub_step"] = "generating"
-            session.agent_intent = intent
-            save_session(session)
-            threading.Thread(
-                target=_generate_no_image_bg,
-                args=(phone, session, intent),
-                daemon=True,
-            ).start()
-            _send(phone, {
-                "kind": "text",
-                "text": f"🎨 Creating from scratch: _{intent.get('description')}_\n⏱ ~90 seconds ☕",
-            }, tts=voice_confirmed)
-            return {"kind": "none"}
 
         if has_image:
             intent["use_reference_image"] = True
@@ -190,78 +175,94 @@ def handle_step(
             _send(phone, {"kind": "text", "text": "🚀 Got it! Art director is analyzing your image..."})
             return {"kind": "none"}
 
-        return {"kind": "text", "text": "📸 Send your product image or reply *skip* to generate from scratch."}
+        if msg:
+            action, _ = classify_action(msg, "product_image", ["skip", "wait"])
+            if action != "wait":
+                # anything that isn't "I'm about to send an image" → generate from scratch
+                intent["use_reference_image"] = False
+                intent["_sub_step"] = "generating"
+                session.agent_intent = intent
+                save_session(session)
+                threading.Thread(
+                    target=_generate_no_image_bg,
+                    args=(phone, session, intent),
+                    daemon=True,
+                ).start()
+                _send(phone, {
+                    "kind": "text",
+                    "text": f"🎨 Creating from scratch: _{intent.get('description')}_\n⏱ ~90 seconds ☕",
+                }, tts=voice_confirmed)
+                return {"kind": "none"}
 
-    # ── Waiting for caption choice (approve / regenerate / custom) ─────────
+        return {"kind": "text", "text": "📸 Send your product image, or say *skip* to generate from scratch."}
+
+    # ── Waiting for caption choice ─────────────────────────────────────────
     if sub_step == "awaiting_caption_choice":
-        if choice in {"approve", "approved", "yes", "looks good", "perfect", "great"}:
+        current_caption = intent.get("_caption", "")
+        action, value = classify_action(
+            msg, "caption_choice",
+            ["approve", "regenerate", "custom", "custom_text"],
+            extra_context=f"Caption: {current_caption[:200]}" if current_caption else "",
+        )
+
+        if action == "approve":
             return _ask_publish_action(phone, session, intent, voice_confirmed)
 
-        if "custom" in choice or "write" in choice or "change" in choice:
-            intent["_sub_step"] = "awaiting_custom_caption"
-            session.agent_intent = intent
-            save_session(session)
-            return {"kind": "text", "text": "✏️ Go ahead — write your caption and I'll use it:"}
-
-        if "regenerate" in choice or "again" in choice or "redo" in choice or "new" in choice:
+        if action == "regenerate":
             intent["_sub_step"] = "generating"
             session.agent_intent = intent
             save_session(session)
-            threading.Thread(
-                target=_regenerate_caption_bg,
-                args=(phone, session, intent),
-                daemon=True,
-            ).start()
+            threading.Thread(target=_regenerate_caption_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
 
-        # Any other text — treat as caption approval to not get stuck
-        return {
-            "kind": "text",
-            "text": (
-                "✅ Reply *approve* to use this caption\n"
-                "✏️ Or type a custom caption\n"
-                "🔄 Or say *regenerate* for a new one"
-            ),
-        }
+        if action == "custom_text":
+            intent["_caption"] = value or msg
+            session.agent_intent = intent
+            save_session(session)
+            return _ask_publish_action(phone, session, intent, voice_confirmed)
+
+        if action == "custom":
+            intent["_sub_step"] = "awaiting_custom_caption"
+            session.agent_intent = intent
+            save_session(session)
+            return {"kind": "text", "text": "✏️ Type your caption and I'll use it:"}
+
+        return {"kind": "text", "text": "✅ *approve* · ✏️ type a custom caption · 🔄 *regenerate*"}
 
     # ── Waiting for custom caption ─────────────────────────────────────────
     if sub_step == "awaiting_custom_caption":
-        if clean:
-            intent["_caption"] = clean
+        if msg:
+            intent["_caption"] = msg
+            session.agent_intent = intent
+            save_session(session)
             return _ask_publish_action(phone, session, intent, voice_confirmed)
-        return {"kind": "text", "text": "✏️ Go ahead — type your caption:"}
+        return {"kind": "text", "text": "✏️ Type your caption:"}
 
     # ── Waiting for publish action ─────────────────────────────────────────
     if sub_step == "awaiting_publish":
-        _NOW_WORDS = {"now", "publish now", "post now", "publish", "post it", "yes",
-                      "do it now", "do it", "go", "go ahead", "send it", "send now",
-                      "post", "upload", "upload now", "do now", "yeah", "yep", "ok"}
-        if choice in _NOW_WORDS or any(w in choice for w in ("now", "go ahead", "do it", "send it", "post it", "publish")):
+        action, _ = classify_action(msg, "publish_action", ["now", "schedule", "cancel"])
+
+        if action == "now":
             intent["publish_action"] = "now"
             session.agent_intent = intent
             save_session(session)
             threading.Thread(target=_publish_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
 
-        if choice in {"schedule", "later", "schedule it"}:
+        if action == "schedule":
             intent["_sub_step"] = "awaiting_schedule_time"
             session.agent_intent = intent
             save_session(session)
-            return {
-                "kind": "text",
-                "text": "⏰ When should I post it? (e.g. *tomorrow at 9am* or *Friday 3pm*)",
-            }
+            return {"kind": "text", "text": "⏰ When should I post it? (e.g. *tomorrow at 9am* or *Friday 3pm*)"}
 
-        return {
-            "kind": "text",
-            "text": "📤 Reply *now* to publish immediately, or *schedule* to pick a time.",
-        }
+        return {"kind": "text", "text": "📤 Publish *now*, or *schedule* for a specific time?"}
 
     # ── Waiting for schedule time ──────────────────────────────────────────
     if sub_step == "awaiting_schedule_time":
-        if clean:
+        if msg:
+            action, value = classify_action(msg, "schedule_time", ["time", "unknown"])
             intent["publish_action"] = "schedule"
-            intent["scheduled_at"]   = clean
+            intent["scheduled_at"]   = value or msg
             session.agent_intent = intent
             save_session(session)
             threading.Thread(target=_publish_bg, args=(phone, session, intent), daemon=True).start()
@@ -270,15 +271,15 @@ def handle_step(
 
     # ── Awaiting description (rare) ────────────────────────────────────────
     if sub_step == "awaiting_description":
-        if clean:
-            intent["description"] = clean
+        if msg:
+            intent["description"] = msg
             intent["_sub_step"] = "generating"
             session.agent_intent = intent
             save_session(session)
             return start(phone, session, intent)
         return {"kind": "text", "text": "What's this post about?"}
 
-    # Unknown sub-step → restart from intent
+    # Unknown sub-step → restart
     return start(phone, session, intent)
 
 
