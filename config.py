@@ -76,6 +76,11 @@ CHECK_USER_MAX_ATTEMPTS = _get_int("CHECK_USER_MAX_ATTEMPTS", 1)
 ZERINI_API_KEY = _get("ZERINI_API_KEY")
 ZERINI_PROFILE_ID = _get("ZERINI_PROFILE_ID")  # from zernio.com/dashboard — scopes all API calls
 
+# Apify (robust scraping for bot-protected sites like Zillow)
+APIFY_API_TOKEN = _get("APIFY_API_TOKEN")
+# Actor that scrapes a Zillow detail page → property data + photos
+APIFY_ZILLOW_ACTOR = _get("APIFY_ZILLOW_ACTOR", "maxcopell~zillow-detail-scraper")
+
 # Last.fm
 LASTFM_API_KEY = _get("LASTFM_API_KEY")
 LASTFM_FALLBACK_AUDIO_URL = _get("LASTFM_FALLBACK_AUDIO_URL",

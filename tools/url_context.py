@@ -218,11 +218,41 @@ def _summarize_text(title: str, raw_text: str, url: str) -> str:
         return raw_text[:500]
 
 
+def _scrape_via_apify(url: str, phone: str) -> dict | None:
+    """Use Apify for bot-protected sites (Zillow). Returns context dict or None."""
+    try:
+        from tools import apify_scraper
+    except Exception:
+        return None
+    if not apify_scraper.is_zillow(url):
+        return None
+    result = apify_scraper.scrape_zillow(url)
+    if not result:
+        return None
+    s3_image_urls = _upload_images(result["image_urls"], phone)
+    return {
+        "url": url,
+        "title": "",
+        "summary": result["summary"],
+        "raw_text": result["summary"],
+        "image_urls": s3_image_urls,
+        "ok": True,
+        "error": None,
+    }
+
+
 def scrape_url(url: str, phone: str) -> dict:
     """
     Full pipeline: fetch page → extract text + images → upload images to S3
     → summarize text with LLM. Returns structured context dict.
+
+    Bot-protected sites (Zillow) are routed through Apify first.
     """
+    # Robust path for sites that block normal scrapers
+    apify_ctx = _scrape_via_apify(url, phone)
+    if apify_ctx and (apify_ctx["image_urls"] or apify_ctx["summary"]):
+        return apify_ctx
+
     try:
         html, final_url = _fetch_html(url)
     except Exception as exc:
