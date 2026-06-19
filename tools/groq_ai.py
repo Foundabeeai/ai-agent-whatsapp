@@ -480,83 +480,85 @@ def generate_poster_text(description: str, brand: dict) -> dict:
 
 def generate_research_carousel_content(topic: str, brand: dict, slide_count: int = 3) -> dict:
     """
-    Generate a research-backed carousel script.
+    Generate a punchy, hook-driven carousel script. Each slide carries ONE short
+    scroll-stopping line; the lines flow as a single narrative across the whole
+    carousel. Minimal text per slide — designed to sit cleanly over a photo.
 
     Returns:
         {
-          "hook":   "Opening hook headline for slide 1",
+          "hook":   "Cover line — max 7 words",
           "slides": [
-            {
-              "stage":      "STAGE 01 — <name>",
-              "stat":       "XX%",
-              "stat_label": "SHORT LABEL",
-              "headline":   "Bold statement.",
-              "body":       "1-2 sentence supporting insight.",
-              "swipe":      "SWIPE FOR STAGE 2",
-            },
+            { "headline": "Short punchy line (max 7 words)",
+              "subtext":  "one tiny supporting line (max 9 words) or empty" },
             ...
-          ]
+          ],
+          "cta": "Final CTA line"
         }
     """
     import json as _json
     import re as _re
 
     system = (
-        "You are a world-class research analyst and viral content strategist. "
-        "You create Instagram carousel scripts that feel like peer-reviewed research translated for the real world — "
-        "authoritative, specific, and impossible to scroll past.\n\n"
-        "Rules for every carousel:\n"
-        "- Hook: One sentence that creates massive curiosity or challenges a belief. "
-        "Cite a real institution, study, or data source. Max 15 words.\n"
-        "- Each data slide must use REAL statistics from credible sources "
-        "(McKinsey, Harvard, MIT, CB Insights, Statista, Forbes, peer-reviewed journals). "
-        "If citing a stat, name the source in the stat_label or body.\n"
-        "- Stage names should be evocative: not just 'STAGE 01' but 'STAGE 01 — THE SILENT KILLER' etc.\n"
-        "- Headline: Max 10 words. Should feel like a punch to the gut — bold, counterintuitive, or alarming.\n"
-        "- Body: 2 short sentences max. Every word must earn its place. "
-        "Bold claims, specific numbers, zero filler.\n"
-        "- The last slide should leave the reader with one powerful takeaway and a strong CTA.\n"
-        "- Output ONLY valid JSON matching the schema exactly. No markdown, no extra keys."
+        "You are a viral Instagram carousel writer. You write CLEAN, MINIMAL, hook-driven "
+        "carousels where each slide shows ONE short punchy line that makes people swipe.\n\n"
+        "HARD RULES:\n"
+        "- Every line is SHORT: the headline is max 7 words. No paragraphs, no filler.\n"
+        "- The slides tell ONE flowing story: slide 1 sets up curiosity, each next slide "
+        "continues the thought, the last slide pays it off with a call to action.\n"
+        "- Think hooks, not essays: 'You walked right past it.' → 'Most buyers do.' → "
+        "'But this one's different.' Each line builds on the last.\n"
+        "- subtext is OPTIONAL and tiny (max 9 words). Use it only when it adds punch; "
+        "otherwise leave it an empty string.\n"
+        "- If real facts about the subject are provided, weave the most attractive ones in "
+        "(price, location, a standout feature) — but keep every line short and seductive.\n"
+        "- No hashtags, no emojis inside slide text, no quotation marks.\n"
+        "- Output ONLY valid JSON. No markdown, no extra keys."
     )
 
     brand_ctx = (
         f"Brand: {brand.get('brand_name') or 'the brand'}\n"
         f"Industry/niche: {brand.get('brand_description') or ''}\n"
-        f"Tone: {brand.get('brand_voice') or 'authoritative and insightful'}\n"
+        f"Tone: {brand.get('brand_voice') or 'bold and inviting'}\n"
     )
 
     user = (
         f"{brand_ctx}\n"
-        f"Carousel topic: {topic}\n"
-        f"Number of data slides (not including hook): {slide_count}\n\n"
-        f"Return JSON in this exact shape:\n"
-        f'{{"hook": "...", "slides": [{{'
-        f'"stage": "STAGE 01 — NAME", "stat": "XX%", "stat_label": "SHORT LABEL", '
-        f'"headline": "Bold statement.", "body": "Supporting insight.", "swipe": "SWIPE FOR STAGE 2"'
-        f'}}, ...]}}'
+        f"Carousel topic / facts:\n{topic}\n\n"
+        f"Number of slides (not counting the cover hook): {slide_count}\n\n"
+        "Write a flowing, hook-driven carousel. Return JSON exactly:\n"
+        '{"hook": "short cover line", '
+        '"slides": [{"headline": "short punchy line", "subtext": ""}, ...], '
+        '"cta": "final call to action line"}'
     )
 
-    raw = _chat(system, user, temperature=0.65, max_tokens=1200)
+    raw = _chat(system, user, temperature=0.7, max_tokens=900)
     try:
         clean = _re.sub(r"```[a-z]*", "", raw).strip().strip("`")
         data = _json.loads(clean)
-        # Ensure required keys exist
         if "hook" not in data or "slides" not in data:
             raise ValueError("Missing keys")
-        return data
+        cta = data.get("cta", "")
+        # Normalise slides → keep only short headline + subtext; attach swipe/cta hints
+        norm_slides = []
+        slides = data.get("slides", [])[:slide_count]
+        for i, s in enumerate(slides):
+            is_last = (i == len(slides) - 1)
+            norm_slides.append({
+                "headline": str(s.get("headline") or "").strip(),
+                "body":     str(s.get("subtext") or s.get("body") or "").strip(),
+                "swipe":    None if is_last else "SWIPE →",
+                "cta":      (cta or "Tap the link in bio") if is_last else None,
+            })
+        return {"hook": str(data.get("hook") or "").strip(), "slides": norm_slides}
     except Exception:
-        # Fallback: build a minimal valid structure
         return {
-            "hook": f"What nobody tells you about {topic}.",
+            "hook": f"{topic[:48]}",
             "slides": [
                 {
-                    "stage": f"STAGE 0{i+1} — KEY INSIGHT",
-                    "stat": f"{(i+1)*20}%",
-                    "stat_label": "OF BUSINESSES MISS THIS",
-                    "headline": f"Key insight {i+1} about {topic}.",
-                    "body": "Research consistently shows that the most successful brands prioritise this.",
-                    "swipe": f"SWIPE FOR STAGE {i+2}" if i < slide_count - 1 else None,
-                    "cta": "FOLLOW FOR DAILY INSIGHTS" if i == slide_count - 1 else None,
+                    "headline": f"Reason {i+1} to look closer.",
+                    "body": "",
+                    "swipe": "SWIPE →" if i < slide_count - 1 else None,
+                    "cta": "Tap the link in bio" if i == slide_count - 1 else None,
                 }
                 for i in range(slide_count)
             ],

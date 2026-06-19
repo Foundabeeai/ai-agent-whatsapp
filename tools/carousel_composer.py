@@ -464,6 +464,7 @@ def _cover_slide(hook_text: str, category: str, total: int, scheme: dict,
     lspacing    = int(c.get("letter_spacing_px", 2))
 
     # Background
+    photo_cover = False
     if bg_bytes:
         bg = Image.open(BytesIO(bg_bytes)).convert("RGB")
         bw, bh = bg.size
@@ -471,10 +472,17 @@ def _cover_slide(hook_text: str, category: str, total: int, scheme: dict,
         bg = bg.crop(((bw-side)//2, (bh-side)//2, (bw+side)//2, (bh+side)//2))
         bg = bg.resize((W, H), Image.LANCZOS)
         img = bg.convert("RGBA")
+        photo_cover = True
     else:
         img = Image.new("RGBA", (W, H), (*_rgb(scheme["bg"]), 255))
 
-    img = Image.alpha_composite(img, _gradient_overlay(W, H, top_alpha=top_alpha, bot_alpha=bot_alpha))
+    if photo_cover:
+        # Readable veil + gradient so the cover hook is legible on any photo
+        img = Image.alpha_composite(img, Image.new("RGBA", (W, H), (0, 0, 0, 90)))
+        img = Image.alpha_composite(img, _gradient_overlay(W, H, top_alpha=40, bot_alpha=235))
+        hl_color = (255, 255, 255, 255)
+    else:
+        img = Image.alpha_composite(img, _gradient_overlay(W, H, top_alpha=top_alpha, bot_alpha=bot_alpha))
     draw = ImageDraw.Draw(img)
 
     # Category pill
@@ -557,6 +565,49 @@ def _content_slide(slide: dict, slide_num: int, total: int, scheme: dict,
     draw  = ImageDraw.Draw(img)
     max_w = W - PAD*2
     y     = CT
+
+    # ── MINIMAL / HOOK mode ────────────────────────────────────────────────
+    # New carousels carry just a short headline (+ optional tiny subtext). Render
+    # it large and centered for a clean, scroll-stopping "hook over photo" look.
+    stage_raw = (slide.get("stage") or "").strip()
+    stat_raw  = (slide.get("stat") or "").strip()
+    if not stage_raw and not stat_raw:
+        headline = (slide.get("headline") or "").strip()
+        subtext  = (slide.get("body") or "").strip()
+        hook_f   = _fnt(max(hl_size, 64), "black")
+        sub_f    = _fnt(max(body_sz, 30), "regular")
+
+        hl_lines = _wrap(headline.upper() if uppercase else headline, hook_f, max_w)
+        sub_lines = _wrap(subtext, sub_f, max_w) if subtext else []
+
+        line_h    = int(max(hl_size, 64) * 1.12)
+        sub_line_h = int(max(body_sz, 30) * 1.3)
+        block_h   = len(hl_lines) * line_h + (len(sub_lines) * sub_line_h + 24 if sub_lines else 0)
+        cy        = (H - block_h) // 2  # vertically centered
+
+        for line in hl_lines:
+            lw, _ = _measure(line, hook_f)
+            _draw_text(draw, ((W - lw)//2, cy), line, hook_f, text_col)
+            cy += line_h
+        if sub_lines:
+            cy += 24
+            for line in sub_lines:
+                lw, _ = _measure(line, sub_f)
+                _draw_text(draw, ((W - lw)//2, cy), line, sub_f, body_col)
+                cy += sub_line_h
+
+        # Bottom swipe / CTA hint — centered
+        if is_last:
+            cta_text = (slide.get("cta") or "FOLLOW FOR MORE").upper()
+        else:
+            cta_text = (slide.get("swipe") or "SWIPE →").upper()
+        cta_f = _fnt(22, "bold")
+        cw    = _spaced_width(cta_text, cta_f, spacing=lspacing)
+        _letter_spaced(draw, (W - cw)//2, H - PAD - 30, cta_text, cta_f, cta_col, spacing=lspacing)
+
+        _profile_badge(img, username, brand_name, avatar, comp=c)
+        _slide_counter(img, slide_num, total, scheme, comp=c)
+        return img.convert("RGB")
 
     # Stage label
     stage = (slide.get("stage") or "").upper()
