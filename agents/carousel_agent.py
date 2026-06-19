@@ -132,7 +132,10 @@ def handle_step(
         return {"kind": "text", "text": "✏️ Type your caption:"}
 
     if sub_step == "awaiting_publish":
-        if choice in {"now", "publish now", "post now", "publish", "post it", "yes"}:
+        _NOW_WORDS = {"now", "publish now", "post now", "publish", "post it", "yes",
+                      "do it now", "do it", "go", "go ahead", "send it", "send now",
+                      "post", "upload", "upload now", "do now", "yeah", "yep", "ok"}
+        if choice in _NOW_WORDS or any(w in choice for w in ("now", "go ahead", "do it", "send it", "post it", "publish")):
             intent["publish_action"] = "now"
             session.agent_intent = intent
             save_session(session)
@@ -145,7 +148,7 @@ def handle_step(
             save_session(session)
             return {"kind": "text", "text": "⏰ When? (e.g. *tomorrow 9am*, *Friday 3pm*)"}
 
-        return {"kind": "text", "text": "📤 *now* or *schedule*?"}
+        return {"kind": "text", "text": "📤 *now* to publish immediately, or *schedule* to pick a time."}
 
     if sub_step == "awaiting_schedule_time":
         if clean:
@@ -337,7 +340,7 @@ def _finish_generation(
 ) -> None:
     voice_ok = intent.get("_voice_confirmed", False)
     for url in s3_urls:
-        _send(phone, {"kind": "media", "text": "", "media_url": url})
+        _send(phone, {"kind": "media", "text": "📸", "media_url": url})
         time.sleep(1.5)
 
     _send(phone, {

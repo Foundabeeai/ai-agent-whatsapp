@@ -233,7 +233,10 @@ def handle_step(
 
     # ── Waiting for publish action ─────────────────────────────────────────
     if sub_step == "awaiting_publish":
-        if choice in {"now", "publish now", "post now", "publish", "post it", "yes"}:
+        _NOW_WORDS = {"now", "publish now", "post now", "publish", "post it", "yes",
+                      "do it now", "do it", "go", "go ahead", "send it", "send now",
+                      "post", "upload", "upload now", "do now", "yeah", "yep", "ok"}
+        if choice in _NOW_WORDS or any(w in choice for w in ("now", "go ahead", "do it", "send it", "post it", "publish")):
             intent["publish_action"] = "now"
             session.agent_intent = intent
             save_session(session)
@@ -537,9 +540,9 @@ def _finish_generation(
 
     voice_ok = intent.get("_voice_confirmed", False)
 
-    # Send images — sleep after each so WhatsApp delivers media before caption
+    # Send images — WhatsApp requires a non-empty body on media messages
     for url in s3_urls:
-        _send(phone, {"kind": "media", "text": "", "media_url": url})
+        _send(phone, {"kind": "media", "text": "📸", "media_url": url})
         time.sleep(1.5)
 
     # Send caption for review
