@@ -339,11 +339,18 @@ def generate_product_post(
     prompt: str,
     product_image_url: str,
     aspect_ratio: str = "1:1",
+    preserve_subject: bool = False,
 ) -> dict:
     """
     Generate a professional product post using SeedDream 4.5.
     The product from product_image_url is kept 100% identical —
     only the environment, lighting, and background change.
+
+    preserve_subject=True → STRICT mode: the ENTIRE subject AND scene (a real
+    property/product/service photo) must stay structurally identical. Only camera
+    angle, lighting, time of day and photographic quality may change. Used for
+    real-estate and any actual subject scraped from a link.
+
     Returns {"ok": True, "url": "...", "bytes": b"..."} or {"ok": False, "error": "..."}.
     """
     if not config.REPLICATE_API_TOKEN:
@@ -354,15 +361,28 @@ def generate_product_post(
     if aspect_ratio not in valid_ratios:
         aspect_ratio = "1:1"
 
-    # Hard prefix that locks the product — prepended to every caller prompt
-    lock_prefix = (
-        "CRITICAL: The product in the reference image must appear IDENTICALLY in the output. "
-        "Do NOT change its shape, color, packaging design, label text, logo, branding marks, "
-        "materials, or proportions in ANY way. Treat the product as a locked element. "
-        "ONLY change: the background environment, surface it rests on, ambient lighting, "
-        "and atmospheric effects around it. "
-        "The product must be the clear hero, sharply in focus, centered or prominently placed. "
-    )
+    if preserve_subject:
+        # Strict: keep the whole real subject/scene; only restage the shot.
+        lock_prefix = (
+            "CRITICAL: The reference image is a REAL photograph of the actual subject "
+            "(a specific property, product or scene). The output MUST be the SAME EXACT "
+            "subject — identical architecture, structure, layout, shape, materials, colours "
+            "and identity. Do NOT invent a different building, room, product or scene. Do NOT "
+            "add, remove or restyle structural features (windows, doors, walls, rooms, roofline). "
+            "ONLY change: camera angle and lens, lighting quality and direction, time of day, "
+            "weather/sky for exteriors, colour grade, clarity and tasteful cleanup. "
+            "It must remain instantly recognisable as the same real subject. "
+        )
+    else:
+        # Product-on-background: lock the product, free to build a scene around it.
+        lock_prefix = (
+            "CRITICAL: The product in the reference image must appear IDENTICALLY in the output. "
+            "Do NOT change its shape, color, packaging design, label text, logo, branding marks, "
+            "materials, or proportions in ANY way. Treat the product as a locked element. "
+            "ONLY change: the background environment, surface it rests on, ambient lighting, "
+            "and atmospheric effects around it. "
+            "The product must be the clear hero, sharply in focus, centered or prominently placed. "
+        )
     full_prompt = lock_prefix + prompt
 
     clean_product_url = _to_replicate_url(product_image_url)
@@ -483,15 +503,18 @@ def generate_product_posts(
     product_image_url: str,
     logo_url: str | None = None,
     aspect_ratio: str = "1:1",
+    preserve_subject: bool = False,
 ) -> dict:
     """
     Generate product posts with SeedDream (strict product preservation) + optional logo overlay.
+    preserve_subject=True keeps the whole real subject/scene intact (see generate_product_post).
     Returns {"ok": True, "bytes_list": [b"..."], "urls": ["..."]} or {"ok": False, "error": "..."}.
     """
     bytes_list: list[bytes] = []
     urls: list[str] = []
     for i, prompt in enumerate(prompts):
-        result = generate_product_post(prompt, product_image_url, aspect_ratio=aspect_ratio)
+        result = generate_product_post(prompt, product_image_url, aspect_ratio=aspect_ratio,
+                                       preserve_subject=preserve_subject)
         if not result.get("ok"):
             return result
         img_bytes = result["bytes"]

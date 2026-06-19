@@ -340,6 +340,7 @@ def _generate_with_image_bg(
         #   2. Best scraped image from a shared link (already an S3 URL)
         #   3. Onboarding reference image
         ref_url = session.reference_image_url
+        ref_from_scrape = False
         if media_urls:
             for url, mt in zip(media_urls, media_types):
                 if mt.startswith("image/"):
@@ -351,10 +352,20 @@ def _generate_with_image_bg(
                     break
         elif scraped_imgs:
             ref_url = scraped_imgs[0]  # already a high-quality S3 presigned URL
+            ref_from_scrape = True
 
         if not ref_url:
             # Fall back to text-only generation (carries scraped_ctx via intent)
             return _generate_no_image_bg(phone, session, intent)
+
+        # STRICT preservation: when the reference is the user's ACTUAL subject
+        # (a real photo from a shared link, or real-estate/property content) the
+        # output must stay the same building/product — only restage the shot.
+        _subject_text = f"{description} {brand.get('brand_description','')}".lower()
+        _is_real_estate = any(k in _subject_text for k in (
+            "real estate", "property", "home", "house", "apartment", "listing",
+            "condo", "villa", "for sale", "for rent", "realty", "realtor", "bedroom"))
+        preserve_subject = ref_from_scrape or _is_real_estate or intent.get("_url_provided", False)
 
         # Art director — fold scraped property/product facts into the brief
         _send(phone, {"kind": "text", "text": "🎬 Art director analyzing the image..."})
@@ -366,6 +377,7 @@ def _generate_with_image_bg(
             image_url=ref_url,
             description=ad_brief,
             brand=brand,
+            preserve_subject=preserve_subject,
         )
         poster_prompt = ad_result["prompt"]
         strategy  = ad_result.get("strategy", "reimagine")
@@ -388,6 +400,7 @@ def _generate_with_image_bg(
             product_image_url=ref_url,
             logo_url=logo_url,
             aspect_ratio="1:1",
+            preserve_subject=preserve_subject,
         )
         if not gen.get("ok"):
             raise RuntimeError(gen.get("error", "generation failed"))

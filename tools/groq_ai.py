@@ -183,7 +183,8 @@ def generate_caption(description: str, content_type: str, website_url: str = "")
     return _chat(system, user, temperature=0.75)
 
 
-def art_director_analyze(image_url: str, description: str, brand: dict) -> dict:
+def art_director_analyze(image_url: str, description: str, brand: dict,
+                         preserve_subject: bool = False) -> dict:
     """
     Two-step art director pipeline (Joseph Kosinski / commercial advertising style).
 
@@ -191,13 +192,14 @@ def art_director_analyze(image_url: str, description: str, brand: dict) -> dict:
     Step 2 — Art direction: decide whether to reimagine the environment OR enhance in place,
               then write the SeedDream img2img prompt accordingly.
 
+    preserve_subject=True  → STRICT mode for real photos of the actual subject
+        (real estate, a specific property/product/service the user is selling).
+        Forces 'enhance' — the subject and scene structure are LOCKED. Only camera
+        angle, lens, lighting, time of day, color grade and minor staging may change.
+        The output must be recognisably the SAME building/object, never a new one.
+
     Returns:
-        {
-          "analysis":    str   — what the vision model sees,
-          "strategy":    "reimagine" | "enhance",
-          "reasoning":   str   — why this strategy,
-          "prompt":      str   — final SeedDream img2img prompt,
-        }
+        { "analysis", "strategy", "reasoning", "camera_choice", "prompt" }
     """
     import json as _json
     import re as _re
@@ -238,6 +240,74 @@ def art_director_analyze(image_url: str, description: str, brand: dict) -> dict:
         analysis = (vision_resp.choices[0].message.content or "").strip()
     except Exception:
         analysis = f"A product image for {brand_name}. The product is centered with standard lighting."
+
+    # ── Step 2 (STRICT): preserve the actual subject, only restage ──────────
+    if preserve_subject:
+        strict_system = (
+            "You are an elite real-estate & product photographer re-shooting an EXISTING, "
+            "REAL subject. The reference image is an actual photograph of the specific "
+            "property/product/service the client is selling. Your ONLY job is to make it look "
+            "like a more professional photo of the SAME EXACT thing.\n\n"
+
+            "═══ ABSOLUTE GUARDRAILS — NON-NEGOTIABLE ═══\n"
+            "The output MUST be recognisably the SAME subject. You must PRESERVE, unchanged:\n"
+            "  • For property/real estate: the exact architecture, building shape, roofline, "
+            "    number and placement of windows/doors, exterior materials & colour, the room "
+            "    layout, walls, flooring, built-in fixtures, cabinetry and overall structure.\n"
+            "  • For a product: exact shape, colour, label, logo, materials, proportions.\n"
+            "  • For a service/scene: the real people, objects and setting that define it.\n"
+            "  NEVER invent a different house, room, product or scene. NEVER add or remove "
+            "  rooms, floors, windows or structural features. NEVER restyle the architecture.\n\n"
+
+            "═══ WHAT YOU MAY CHANGE (and should) ═══\n"
+            "  • Camera angle, lens and framing (a better hero angle of the same subject)\n"
+            "  • Lighting quality, direction and time of day (e.g. warm golden-hour light)\n"
+            "  • Colour grade, contrast, clarity and overall photographic polish\n"
+            "  • Sky/weather for exteriors; tasteful, realistic staging of EXISTING spaces\n"
+            "  • Remove clutter, correct exposure, sharpen — like a pro real-estate edit\n\n"
+
+            "Choose the camera angle/lens and lighting that best flatters the SAME subject.\n\n"
+
+            "═══ WRITE THE PROMPT ═══\n"
+            "Write a SeedDream img2img prompt that explicitly instructs the model to keep the "
+            "subject from the reference image IDENTICAL in structure and identity, and to only "
+            "adjust camera angle, lighting, time of day and photographic quality. "
+            "Begin the prompt with: 'Same exact property/product as the reference, unchanged "
+            "structure and identity — re-photographed with '. "
+            "End with: photorealistic, true-to-source, professional real-estate/product "
+            "photography, natural perspective, ultra-sharp, 8K.\n\n"
+            "strategy MUST be 'enhance'. Return ONLY valid JSON: "
+            "{strategy, reasoning (1 sentence), camera_choice (1 phrase), prompt}"
+        )
+        strict_user = (
+            f"Brand: {brand_name} | Visual tone: {brand_voice} | Goal: {social_goal}\n"
+            f"Content idea: {description}\n\n"
+            f"Subject analysis (this is the REAL subject to preserve):\n{analysis}\n\n"
+            "Write the img2img prompt that keeps this exact subject and only restages the shot. "
+            "Return JSON only."
+        )
+        raw = _chat(strict_system, strict_user, temperature=0.5, max_tokens=900)
+        try:
+            clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+            data = _json.loads(clean)
+            return {
+                "analysis":      analysis,
+                "strategy":      "enhance",  # forced
+                "reasoning":     data.get("reasoning", "preserve real subject"),
+                "camera_choice": data.get("camera_choice", ""),
+                "prompt":        data.get("prompt", ""),
+            }
+        except Exception:
+            return {
+                "analysis":      analysis,
+                "strategy":      "enhance",
+                "reasoning":     "preserve real subject (raw)",
+                "camera_choice": "",
+                "prompt":        ("Same exact property/product as the reference, unchanged "
+                                  "structure and identity — re-photographed with professional "
+                                  "lighting and a flattering camera angle, golden-hour warmth, "
+                                  "photorealistic, true-to-source, ultra-sharp, 8K."),
+            }
 
     # ── Step 2: Art direction decision + prompt generation ──────────────────
     system = (
