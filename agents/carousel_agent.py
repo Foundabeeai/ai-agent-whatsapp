@@ -127,14 +127,18 @@ def handle_step(
             return start(phone, session, intent)
         return {"kind": "text", "text": "📑 What's the carousel topic?"}
 
+    if sub_step == "generating":
+        # A message arrived while we're still building — don't start a second run.
+        return {"kind": "text", "text": "⏳ Still creating your carousel — hang tight, almost there!"}
+
     if sub_step == "awaiting_carousel_setup":
         import re as _re
-        # Parse a slide count if present
+        # 1) Parse a slide count if present anywhere in the message
         m = _re.search(r"\b([3-9]|10)\b", msg)
         if m:
             intent["_slide_count"] = max(3, min(10, int(m.group(1))))
 
-        # Uploaded photos → upload to S3 and feature them
+        # 2) Process any photos/links/skip in this message
         has_media = bool(media_urls and any(t.startswith("image/") for t in media_types))
         if has_media:
             user_id = session.verified_user_id or phone
@@ -145,44 +149,50 @@ def handle_step(
                     if up.get("ok"):
                         imgs.append(up["s3_url"])
             intent["_scraped_image_urls"] = (intent.get("_scraped_image_urls") or []) + imgs
+            intent["_photos_decided"] = True
+        else:
+            from tools.url_context import find_all_urls, scrape_url as _scrape_url
+            urls = find_all_urls(msg) if msg else []
+            if urls:
+                _send(phone, {"kind": "text", "text": "🔍 Found a link — pulling the photos and details now..."})
+                all_imgs, summaries = [], []
+                for u in urls[:2]:
+                    ctx = _scrape_url(u, phone)
+                    if ctx.get("ok"):
+                        all_imgs.extend(ctx["image_urls"])
+                        if ctx.get("summary"):
+                            summaries.append(ctx["summary"])
+                intent["_scraped_image_urls"] = (intent.get("_scraped_image_urls") or []) + all_imgs
+                intent["_scraped_summaries"]  = (intent.get("_scraped_summaries") or []) + summaries
+                intent["_photos_decided"] = True
+                if not all_imgs:
+                    _send(phone, {"kind": "text",
+                                  "text": "⚠️ Couldn't pull photos from that link — I'll use the details I found."})
+            elif msg and not m:
+                # A worded reply with no number and no link → treat as skip decision
+                action, _ = classify_action(msg, "product_image", ["skip", "wait"])
+                if action != "wait":
+                    intent["_photos_decided"] = True
+
+        session.agent_intent = intent
+        save_session(session)
+
+        # 3) Generate only once BOTH photos-decision and slide-count are known
+        photos_decided = bool(intent.get("_photos_decided"))
+        have_count     = bool(intent.get("_slide_count"))
+        if photos_decided and have_count:
             intent["_carousel_ready"] = True
             session.agent_intent = intent
             save_session(session)
-            return start(phone, session, intent)
+            _begin_carousel_generation(phone, session, intent, voice_confirmed)
+            return {"kind": "none"}
 
-        # A link → scrape it (direct image / Apify / generic)
-        from tools.url_context import find_all_urls, scrape_url as _scrape_url
-        urls = find_all_urls(msg) if msg else []
-        if urls:
-            _send(phone, {"kind": "text", "text": "🔍 Found a link — pulling the photos and details now..."})
-            all_imgs, summaries = [], []
-            for u in urls[:2]:
-                ctx = _scrape_url(u, phone)
-                if ctx.get("ok"):
-                    all_imgs.extend(ctx["image_urls"])
-                    if ctx.get("summary"):
-                        summaries.append(ctx["summary"])
-            intent["_scraped_image_urls"] = (intent.get("_scraped_image_urls") or []) + all_imgs
-            intent["_scraped_summaries"]  = (intent.get("_scraped_summaries") or []) + summaries
-            intent["_carousel_ready"] = True
-            session.agent_intent = intent
-            save_session(session)
-            if not all_imgs:
-                _send(phone, {"kind": "text",
-                              "text": "⚠️ Couldn't pull photos from that link — I'll use the details I "
-                                      "found and design the rest."})
-            return start(phone, session, intent)
-
-        # Skip → research/concept carousel
-        action, _ = classify_action(msg, "product_image", ["skip", "wait"]) if msg else ("skip", "")
-        if action != "wait":
-            intent["_carousel_ready"] = True
-            session.agent_intent = intent
-            save_session(session)
-            return start(phone, session, intent)
-
-        return {"kind": "text",
-                "text": "📸 Send photos or a link, or reply *skip*. How many slides (3–8)?"}
+        # 4) Ask for whatever is still missing
+        if not photos_decided:
+            return {"kind": "text",
+                    "text": "📸 Send photos or a link to feature, or reply *skip*."
+                            + ("" if have_count else "\n🔢 And how many slides? (3–8)")}
+        return {"kind": "text", "text": "🔢 Got it! How many slides would you like? Reply a number *3–8*."}
 
     if sub_step == "awaiting_caption_choice":
         current_caption = intent.get("_caption", "")
@@ -276,8 +286,20 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
                        if scraped_summaries else "")
 
         # Step 1: Generate carousel content (research + hook)
-        _send(phone, {"kind": "text", "text": "📊 Researching data and crafting slides..."})
-        enriched_description = description + scraped_ctx
+        if scraped_summaries:
+            # Real subject (property/product) — slides must describe THIS specific
+            # item using the scraped facts, not generic market research.
+            _send(phone, {"kind": "text", "text": "📝 Writing slides about your actual listing..."})
+            enriched_description = (
+                f"{description}\n\n"
+                "Write the carousel slides about THIS SPECIFIC property/product using the exact "
+                "facts below (price, beds, baths, size, location, key features). Each slide should "
+                "highlight a real selling point from these facts — do NOT invent generic market "
+                "statistics.\n" + scraped_ctx
+            )
+        else:
+            _send(phone, {"kind": "text", "text": "📊 Researching data and crafting slides..."})
+            enriched_description = description + scraped_ctx
         carousel_content = groq_ai.generate_research_carousel_content(
             topic=enriched_description, brand=brand, slide_count=slide_count
         )
@@ -359,7 +381,7 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
             raise RuntimeError("No slides uploaded")
 
         caption = groq_ai.generate_caption_with_style(
-            description, "carousel",
+            description + scraped_ctx, "carousel",
             website_url=session.website_url or "",
             style_skill=style_skill,
         )

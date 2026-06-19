@@ -537,11 +537,16 @@ def _content_slide(slide: dict, slide_num: int, total: int, scheme: dict,
         bg = bg.crop(((bw-side)//2, (bh-side)//2, (bw+side)//2, (bh+side)//2))
         bg = bg.resize((W, H), Image.LANCZOS)
         img = bg.convert("RGBA")
-        img = Image.alpha_composite(img, _gradient_overlay(W, H, top_alpha=ta, bot_alpha=ba))
-        text_col  = (*_rgb(hl_col_s), 255) if hl_col_s else (255, 255, 255, 255)
-        body_col  = (*_rgb(body_col_s), 255) if body_col_s else (220, 220, 220, 255)
+        # Guaranteed-readable treatment over ANY photo: a uniform dark veil so
+        # text near the top is legible, plus a stronger bottom gradient. Custom
+        # style colours are ignored here because they may clash with the photo.
+        veil = Image.new("RGBA", (W, H), (0, 0, 0, 95))
+        img  = Image.alpha_composite(img, veil)
+        img  = Image.alpha_composite(img, _gradient_overlay(W, H, top_alpha=40, bot_alpha=235))
+        text_col  = (255, 255, 255, 255)   # white headline — always readable on the veil
+        body_col  = (236, 236, 236, 255)
         stage_col = _rgb(scheme["pill"] if "pill" in scheme else scheme["stage"])
-        cta_col   = (170, 170, 170, 200)
+        cta_col   = (215, 215, 215, 230)
     else:
         img       = Image.new("RGBA", (W, H), (*_rgb(scheme["bg"]), 255))
         text_col  = (*_rgb(hl_col_s), 255) if hl_col_s else (*_rgb(scheme["hl"]), 255)
