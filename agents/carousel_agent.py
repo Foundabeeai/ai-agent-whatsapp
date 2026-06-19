@@ -258,8 +258,8 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         for img_bytes in slide_images:
             up = aws_storage.upload_bytes(
                 img_bytes,
-                content_type="image/png",
-                extension="png",
+                content_type="image/jpeg",
+                extension="jpg",
                 folder=f"{user_id}/carousels",
             )
             if up.get("ok"):

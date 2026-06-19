@@ -629,37 +629,63 @@ def _ask_publish_action(
     return {"kind": "none"}
 
 
+def _to_whatsapp_safe_jpeg(raw: bytes) -> bytes:
+    """Re-encode any image bytes to a WhatsApp-safe JPEG (≤1080px, quality 88).
+    Replicate often returns large PNG/WebP files that WhatsApp silently drops."""
+    from io import BytesIO as _BytesIO
+    from PIL import Image as _Image
+    im = _Image.open(_BytesIO(raw)).convert("RGB")
+    w, h = im.size
+    longest = max(w, h)
+    if longest > 1080:
+        scale = 1080 / longest
+        im = im.resize((int(w * scale), int(h * scale)), _Image.LANCZOS)
+    out = _BytesIO()
+    im.save(out, "JPEG", quality=88, optimize=True)
+    return out.getvalue()
+
+
 def _stamp_images(
     s3_urls: list[str], session: UserSession, user_id: str
 ) -> list[str]:
-    """Add profile badge to images using user's style compositor. Returns new S3 URLs."""
-    try:
-        username   = session.instagram_username or session.brand_name or "brand"
-        brand_name = session.brand_name or ""
-        avatar_url = session.brand_assets[0] if session.brand_assets else None
-        compositor = db.get_post_style_compositor(session.phone_number)
-        stamped = []
-        for url in s3_urls:
+    """Stamp profile badge + guarantee a WhatsApp-safe JPEG for every image.
+    Always re-encodes to JPEG so Twilio/WhatsApp never drops oversized PNG/WebP."""
+    import requests as _req
+    username   = session.instagram_username or session.brand_name or "brand"
+    brand_name = session.brand_name or ""
+    avatar_url = session.brand_assets[0] if session.brand_assets else None
+    compositor = db.get_post_style_compositor(session.phone_number)
+
+    out_urls = []
+    for url in s3_urls:
+        final_bytes = None
+        try:
+            r = _req.get(url, timeout=20)
+            r.raise_for_status()
             try:
-                import requests as _req
-                r = _req.get(url, timeout=15)
-                r.raise_for_status()
-                stamped_bytes = stamp_post_image(
+                # Try stamping (returns JPEG bytes)
+                final_bytes = stamp_post_image(
                     r.content,
                     username=username,
                     brand_name=brand_name,
                     avatar_url=avatar_url,
                     style_compositor=compositor,
                 )
-                up = aws_storage.upload_bytes(
-                    stamped_bytes,
-                    content_type="image/png",
-                    extension="png",
-                    folder=f"{user_id}/posts_stamped",
-                )
-                stamped.append(up["s3_url"] if up.get("ok") else url)
-            except Exception:
-                stamped.append(url)
-        return stamped
-    except Exception:
-        return s3_urls
+            except Exception as exc:
+                logger.warning("stamp failed, falling back to plain JPEG: %s", exc)
+                final_bytes = _to_whatsapp_safe_jpeg(r.content)
+
+            # Belt-and-suspenders: ensure it's a safe JPEG even after stamping
+            final_bytes = _to_whatsapp_safe_jpeg(final_bytes)
+
+            up = aws_storage.upload_bytes(
+                final_bytes,
+                content_type="image/jpeg",
+                extension="jpg",
+                folder=f"{user_id}/posts_stamped",
+            )
+            out_urls.append(up["s3_url"] if up.get("ok") else url)
+        except Exception as exc:
+            logger.warning("_stamp_images failed for one url (%s): %s", url, exc)
+            out_urls.append(url)
+    return out_urls
