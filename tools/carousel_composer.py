@@ -117,6 +117,24 @@ def _is_dark(h: str) -> bool:
     return _luminance(h) < 140
 
 
+def _complement_text(bg_hex: str) -> str:
+    """
+    Return a text colour that is the COMPLEMENTARY hue of the background, with its
+    lightness pushed to the opposite end so it stays highly readable.
+    e.g. deep teal bg → warm cream-gold text; terracotta bg → cool light-cyan text.
+    """
+    import colorsys
+    r, g, b = _rgb(bg_hex)
+    h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+    comp_h = (h + 0.5) % 1.0                       # opposite hue on the wheel
+    if _luminance(bg_hex) < 150:                   # dark/mid bg → very light complementary text
+        nl, ns = 0.95, min(0.35, max(0.15, s))     # keep it tinted but bright for contrast
+    else:                                          # light bg → very deep complementary text
+        nl, ns = 0.12, max(0.5, s)
+    rr, gg, bb = colorsys.hls_to_rgb(comp_h, nl, ns)
+    return "#{:02x}{:02x}{:02x}".format(int(rr * 255), int(gg * 255), int(bb * 255))
+
+
 def _darken(h: str, f: float = 0.5) -> str:
     r, g, b = _rgb(h)
     return "#{:02x}{:02x}{:02x}".format(int(r*f), int(g*f), int(b*f))
@@ -160,13 +178,12 @@ def _build_schemes(brand_colors: dict | None) -> list[dict]:
     # Hook is always photo-bg, overlay handles legibility — scheme just for elements
     hook_bg = "#0D0D0D"
 
-    # Light slide — PURE WHITE for maximum contrast with black text (no muddy beige)
-    cream_bg = "#FFFFFF"
-
-    # Dark slide — primary or near-black
-    dark_bg = primary if _is_dark(primary) else _darken(primary, 0.3)
-    if _luminance(dark_bg) > 80:   # force dark enough
-        dark_bg = "#0D0D0D"
+    # Two content backgrounds derived from the brand: one deep, one its accent.
+    # Text is the COMPLEMENTARY hue of each (computed per-scheme below).
+    deep_bg = primary if _is_dark(primary) else _darken(primary, 0.35)
+    if _luminance(deep_bg) > 90:
+        deep_bg = "#10243A"          # fall back to a rich deep navy, not flat black
+    accent_bg = accent
 
     # Finale — accent
     fin_bg = accent
@@ -176,19 +193,19 @@ def _build_schemes(brand_colors: dict | None) -> list[dict]:
             "bg":          bg,
             "stage":       stage_color,               # label + bars
             "pill":        pill_color or stage_color, # category pill on cover
-            "hl":          _on(bg),                   # headline
-            "body":        _body_on(bg),              # body text
-            "cta":         _cta_on(bg),               # swipe hint
+            "hl":          _complement_text(bg),      # complementary, high-contrast headline
+            "body":        _complement_text(bg),      # body text (same family)
+            "cta":         _complement_text(bg),      # swipe hint
             "counter_bg":  "#1A1A1A" if not _is_dark(bg) else "#FFFFFF",
             "counter_fg":  "#FFFFFF" if not _is_dark(bg) else "#111111",
             "source":      stage_color,               # source attribution
         }
 
     return [
-        _scheme(hook_bg,  "#FFFFFF", accent),
-        _scheme(cream_bg, accent),
-        _scheme(dark_bg,  accent),
-        _scheme(fin_bg,   _on(fin_bg), _on(fin_bg)),
+        _scheme(hook_bg,   "#FFFFFF", accent),
+        _scheme(deep_bg,   accent),
+        _scheme(accent_bg, _on(accent_bg)),
+        _scheme(fin_bg,    _on(fin_bg), _on(fin_bg)),
     ]
 
 
@@ -577,14 +594,15 @@ def _content_slide(slide: dict, slide_num: int, total: int, scheme: dict,
         hook_f   = _fnt(max(hl_size, 64), "black")
         sub_f    = _fnt(max(body_sz, 30), "regular")
 
-        # HIGH-CONTRAST guarantee: on a solid (non-photo) slide the text colour MUST
-        # be derived from the background — never a fixed style colour that could clash
-        # (e.g. white text on a beige slide). Photo slides already use white on a veil.
+        # CONTRAST guarantee: on a solid (non-photo) slide use a COMPLEMENTARY-hue
+        # text colour derived from the background — never a fixed style colour that
+        # could clash (e.g. white on beige). Photo slides use white over a veil.
         if not bg_bytes:
             bg_hex   = scheme.get("bg", "#111111")
-            text_col = (*_rgb(_on(bg_hex)), 255)        # pure black or white vs bg
-            body_col = (*_rgb(_on(bg_hex)), 230)
-            cta_col  = (*_rgb(_on(bg_hex)), 180)
+            comp_hex = _complement_text(bg_hex)
+            text_col = (*_rgb(comp_hex), 255)
+            body_col = (*_rgb(comp_hex), 235)
+            cta_col  = (*_rgb(comp_hex), 190)
 
         hl_lines = _wrap(headline.upper() if uppercase else headline, hook_f, max_w)
         sub_lines = _wrap(subtext, sub_f, max_w) if subtext else []
