@@ -199,13 +199,57 @@ def handle_step(
                 args=(phone, session, intent, media_urls, media_types),
                 daemon=True,
             ).start()
-            _send(phone, {"kind": "text", "text": "🚀 Got it! Art director is analyzing your image..."})
+            _send(phone, {"kind": "text", "text": "🚀 Got it! Working with your image now..."})
+            return {"kind": "none"}
+
+        # User sent a LINK instead of an image → scrape it and use those photos
+        from tools.url_context import find_all_urls, scrape_url as _scrape_url
+        urls = find_all_urls(msg) if msg else []
+        if urls:
+            _send(phone, {"kind": "text", "text": "🔍 Found a link — pulling the photos and details now..."})
+            all_imgs: list[str] = []
+            summaries: list[str] = []
+            any_blocked = False
+            for u in urls[:2]:
+                ctx = _scrape_url(u, phone)
+                if ctx.get("ok"):
+                    all_imgs.extend(ctx["image_urls"])
+                    if ctx.get("summary"):
+                        summaries.append(ctx["summary"])
+                elif ctx.get("error") == "blocked":
+                    any_blocked = True
+            intent["_scraped_image_urls"] = all_imgs
+            intent["_scraped_summaries"]  = summaries
+            intent["_url_provided"]       = True
+            intent["_sub_step"]           = "generating"
+            session.agent_intent = intent
+            save_session(session)
+            if all_imgs:
+                threading.Thread(
+                    target=_generate_with_image_bg,
+                    args=(phone, session, intent, [], []),
+                    daemon=True,
+                ).start()
+                _send(phone, {"kind": "text",
+                              "text": f"🏡 Using the photos from your link.\n🎨 Creating your post: "
+                                      f"_{intent.get('description')}_\n⏱ ~90 seconds ☕"}, tts=voice_confirmed)
+            else:
+                if any_blocked:
+                    _send(phone, {"kind": "text",
+                                  "text": "⚠️ That site blocks automated access, so I couldn't pull its photos. "
+                                          "Send me a photo of the property and I'll build around it, "
+                                          "or I'll create from your description now."})
+                threading.Thread(
+                    target=_generate_no_image_bg,
+                    args=(phone, session, intent),
+                    daemon=True,
+                ).start()
             return {"kind": "none"}
 
         if msg:
             action, _ = classify_action(msg, "product_image", ["skip", "wait"])
             if action != "wait":
-                # anything that isn't "I'm about to send an image" → generate from scratch
+                # explicit skip / "from scratch" → generate without a reference
                 intent["use_reference_image"] = False
                 intent["_sub_step"] = "generating"
                 session.agent_intent = intent
@@ -221,7 +265,7 @@ def handle_step(
                 }, tts=voice_confirmed)
                 return {"kind": "none"}
 
-        return {"kind": "text", "text": "📸 Send your product image, or say *skip* to generate from scratch."}
+        return {"kind": "text", "text": "📸 Send your product image or a link, or say *skip* to generate from scratch."}
 
     # ── Waiting for caption choice ─────────────────────────────────────────
     if sub_step == "awaiting_caption_choice":
@@ -367,7 +411,24 @@ def _generate_with_image_bg(
             "condo", "villa", "for sale", "for rent", "realty", "realtor", "bedroom"))
         preserve_subject = ref_from_scrape or _is_real_estate or intent.get("_url_provided", False)
 
-        # Art director — fold scraped property/product facts into the brief
+        # ── GUARANTEED fidelity: use the REAL photo(s), no AI redraw ───────────
+        # For a real subject the user is selling (property/product from their own
+        # photo or link), an img2img redraw always risks altering the subject.
+        # Use the actual photo directly — badge-stamped + sized — so the property
+        # is 100% unchanged. Caption still uses the scraped facts.
+        if preserve_subject:
+            _send(phone, {"kind": "text",
+                          "text": "🖼 Using your real photo — keeping the property exactly as-is."})
+            s3_urls = _stamp_images([ref_url], session=session, user_id=user_id)
+            caption = groq_ai.generate_caption_with_style(
+                description + scraped_ctx, "image_post",
+                website_url=session.website_url or "",
+                style_skill=style_skill,
+            )
+            _finish_generation(phone, session, intent, s3_urls, caption, [])
+            return
+
+        # Art director — fold scraped product facts into the brief
         _send(phone, {"kind": "text", "text": "🎬 Art director analyzing the image..."})
         style_ctx = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
         ad_brief  = description + scraped_ctx
