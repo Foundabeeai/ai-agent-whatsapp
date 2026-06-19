@@ -435,7 +435,10 @@ def format_post_summary(phone_number: str) -> str:
 # Content Calendar
 # ---------------------------------------------------------------------------
 
-def save_content_calendar(phone_number: str, token: str, brand_name: str, days: list) -> None:
+def save_content_calendar(
+    phone_number: str, token: str, brand_name: str, days: list,
+    calendar_url: str = "",
+) -> None:
     """Upsert a 30-day content calendar for a user."""
     try:
         db = get_db()
@@ -446,6 +449,7 @@ def save_content_calendar(phone_number: str, token: str, brand_name: str, days: 
                 "token": token,
                 "brand_name": brand_name,
                 "days": days,
+                "calendar_url": calendar_url,
                 "updated_at": datetime.now(timezone.utc),
             }},
             upsert=True,

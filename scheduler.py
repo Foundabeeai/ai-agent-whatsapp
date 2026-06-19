@@ -60,17 +60,58 @@ def calendar_token(phone: str) -> str:
 
 
 def calendar_url(phone: str) -> str:
-    """Public URL for the user's content calendar."""
-    host = (config.PUBLIC_HOST or "").rstrip("/")
-    if not host:
-        host = f"http://3.97.167.111:5001"
-    return f"{host}/calendar/{calendar_token(phone)}"
+    """Public URL for the user's content calendar (foundabee.com/calendar/{token})."""
+    token = calendar_token(phone)
+    return f"https://foundabee.com/calendar/{token}"
+
+
+def _post_calendar_to_backend(phone: str, session, days: list[dict]) -> str:
+    """
+    POST the calendar to the Foundabee backend API.
+    Returns the public calendar URL on success, falls back to local URL on failure.
+    """
+    import requests as _req
+    backend_url = (config.FOUNDABEE_API_URL or "https://api.foundabee.com").rstrip("/")
+    try:
+        resp = _req.post(
+            f"{backend_url}/v1/beeq/calendar",
+            json={
+                "phone_number": phone,
+                "email":        session.verified_email or "",
+                "brand_name":   session.brand_name or "Your Brand",
+                "days":         days,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        url = data.get("calendar_url") or calendar_url(phone)
+        # Also cache locally so the bot can re-send without hitting the API
+        db.save_content_calendar(
+            phone_number=phone,
+            token=calendar_token(phone),
+            brand_name=session.brand_name or "Your Brand",
+            days=days,
+            calendar_url=url,
+        )
+        return url
+    except Exception as exc:
+        _logger.warning("Failed to POST calendar to backend: %s", exc)
+        # Fallback: save locally and return local URL
+        db.save_content_calendar(
+            phone_number=phone,
+            token=calendar_token(phone),
+            brand_name=session.brand_name or "Your Brand",
+            days=days,
+        )
+        return calendar_url(phone)
 
 
 def generate_and_save_calendar(phone: str, session) -> str:
     """
-    Generate a 30-day content calendar for this user, save to MongoDB,
-    and return the public URL.
+    Generate a 30-day content calendar for this user, push to the Foundabee
+    backend (so it's accessible at foundabee.com/calendar/{token}), and return
+    the public URL.
     """
     from tools import groq_ai
     from datetime import datetime as _dt
@@ -83,14 +124,7 @@ def generate_and_save_calendar(phone: str, session) -> str:
         _logger.warning("generate_30_day_calendar failed: %s", exc)
         days = _fallback_calendar(start_date)
 
-    token = calendar_token(phone)
-    db.save_content_calendar(
-        phone_number=phone,
-        token=token,
-        brand_name=session.brand_name or "Your Brand",
-        days=days,
-    )
-    return calendar_url(phone)
+    return _post_calendar_to_backend(phone, session, days)
 
 
 def _fallback_calendar(start_date: str) -> list[dict]:

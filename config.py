@@ -96,5 +96,7 @@ PORT = _get_int("PORT", 5000)
 FLASK_DEBUG = _get("FLASK_DEBUG", "0") == "1"
 
 # Public base URL for calendar links (no trailing slash)
-# Set PUBLIC_HOST in .env, e.g. http://3.97.167.111:5000
 PUBLIC_HOST = _get("PUBLIC_HOST", "")
+
+# Foundabee backend API base URL — used to POST calendars
+FOUNDABEE_API_URL = _get("FOUNDABEE_API_URL", "https://api.foundabee.com")
