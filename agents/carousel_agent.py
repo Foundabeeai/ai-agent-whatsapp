@@ -46,7 +46,6 @@ def _send(phone: str, payload: dict, tts: bool = False) -> None:
 
 def start(phone: str, session: UserSession, intent: dict) -> dict:
     description = intent.get("description", "").strip()
-    count_raw   = intent.get("count", 0)
     voice_ok    = intent.get("_voice_confirmed", False)
 
     if not description:
@@ -58,15 +57,43 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
             "text": "📑 What should the carousel be about? Give me a topic or idea:",
         }
 
-    # Determine slide count — if specified use it, else default 3 data slides
-    slide_count = max(1, int(count_raw or 3))
+    # Ask for photos/links + slide count once, unless we already have inputs.
+    scraped_imgs = intent.get("_scraped_image_urls", [])
+    media_urls   = intent.get("_media_urls", [])
+    has_media    = bool(media_urls and any(t.startswith("image/") for t in intent.get("_media_types", [])))
+    if not intent.get("_carousel_ready") and not scraped_imgs and not has_media:
+        intent["_sub_step"] = "awaiting_carousel_setup"
+        session.agent_intent = intent
+        save_session(session)
+        return {
+            "kind": "text",
+            "text": (
+                f"📑 Let's build your carousel: _{description}_\n\n"
+                "📸 *Send photos or a link* to feature them in the slides (real product/property photos),\n"
+                "or reply *skip* to design it from research/concept.\n\n"
+                "🔢 How many slides? Reply a number *3–8* (default *4*)."
+            ),
+        }
+
+    _begin_carousel_generation(phone, session, intent, voice_ok)
+    return {"kind": "none"}
+
+
+def _begin_carousel_generation(phone: str, session: UserSession, intent: dict, voice_ok: bool) -> None:
+    """Kick off carousel generation with whatever inputs we've collected."""
+    description = intent.get("description", "").strip()
+    slide_count = max(1, int(intent.get("_slide_count") or intent.get("count") or 4))
     intent["_slide_count"] = slide_count
+
+    has_photos = bool(intent.get("_scraped_image_urls")) or bool(
+        intent.get("_media_urls") and any(t.startswith("image/") for t in intent.get("_media_types", [])))
+    src_line = "🏡 Featuring your photos" if has_photos else "📊 Research slides"
 
     _send(phone, {
         "kind": "text",
         "text": (
             f"📑 *Creating carousel:* _{description}_\n"
-            f"📊 {slide_count} research slides + hook\n"
+            f"{src_line} · {slide_count} slides + hook\n"
             f"⏱ ~{(slide_count + 1) * 2} minutes ☕"
         ),
     }, tts=voice_ok)
@@ -74,13 +101,7 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
     intent["_sub_step"] = "generating"
     session.agent_intent = intent
     save_session(session)
-
-    threading.Thread(
-        target=_generate_bg,
-        args=(phone, session, intent),
-        daemon=True,
-    ).start()
-    return {"kind": "none"}
+    threading.Thread(target=_generate_bg, args=(phone, session, intent), daemon=True).start()
 
 
 # ── Step handler ──────────────────────────────────────────────────────────
@@ -105,6 +126,63 @@ def handle_step(
             intent["description"] = msg
             return start(phone, session, intent)
         return {"kind": "text", "text": "📑 What's the carousel topic?"}
+
+    if sub_step == "awaiting_carousel_setup":
+        import re as _re
+        # Parse a slide count if present
+        m = _re.search(r"\b([3-9]|10)\b", msg)
+        if m:
+            intent["_slide_count"] = max(3, min(10, int(m.group(1))))
+
+        # Uploaded photos → upload to S3 and feature them
+        has_media = bool(media_urls and any(t.startswith("image/") for t in media_types))
+        if has_media:
+            user_id = session.verified_user_id or phone
+            imgs = []
+            for url, mt in zip(media_urls, media_types):
+                if mt.startswith("image/"):
+                    up = aws_storage.upload_from_url(url, user_id=user_id, media_kind="carousel_ref")
+                    if up.get("ok"):
+                        imgs.append(up["s3_url"])
+            intent["_scraped_image_urls"] = (intent.get("_scraped_image_urls") or []) + imgs
+            intent["_carousel_ready"] = True
+            session.agent_intent = intent
+            save_session(session)
+            return start(phone, session, intent)
+
+        # A link → scrape it (direct image / Apify / generic)
+        from tools.url_context import find_all_urls, scrape_url as _scrape_url
+        urls = find_all_urls(msg) if msg else []
+        if urls:
+            _send(phone, {"kind": "text", "text": "🔍 Found a link — pulling the photos and details now..."})
+            all_imgs, summaries = [], []
+            for u in urls[:2]:
+                ctx = _scrape_url(u, phone)
+                if ctx.get("ok"):
+                    all_imgs.extend(ctx["image_urls"])
+                    if ctx.get("summary"):
+                        summaries.append(ctx["summary"])
+            intent["_scraped_image_urls"] = (intent.get("_scraped_image_urls") or []) + all_imgs
+            intent["_scraped_summaries"]  = (intent.get("_scraped_summaries") or []) + summaries
+            intent["_carousel_ready"] = True
+            session.agent_intent = intent
+            save_session(session)
+            if not all_imgs:
+                _send(phone, {"kind": "text",
+                              "text": "⚠️ Couldn't pull photos from that link — I'll use the details I "
+                                      "found and design the rest."})
+            return start(phone, session, intent)
+
+        # Skip → research/concept carousel
+        action, _ = classify_action(msg, "product_image", ["skip", "wait"]) if msg else ("skip", "")
+        if action != "wait":
+            intent["_carousel_ready"] = True
+            session.agent_intent = intent
+            save_session(session)
+            return start(phone, session, intent)
+
+        return {"kind": "text",
+                "text": "📸 Send photos or a link, or reply *skip*. How many slides (3–8)?"}
 
     if sub_step == "awaiting_caption_choice":
         current_caption = intent.get("_caption", "")
@@ -214,28 +292,40 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         hook_bytes: Optional[bytes] = None
         extra_bg: list[bytes] = []
 
-        # Prefer scraped images as reference backgrounds, fall back to brand assets
-        ref_images = scraped_imgs[:3] if scraped_imgs else (
-            [session.brand_assets[0]] if session.brand_assets else None
-        )
-
-        brand_with_style = {**brand, "_style_context": style_ctx} if style_ctx else brand
-        for bi in range(n_bg):
-            bg_prompt = (
-                f"Cinematic editorial photo for {brand.get('brand_name','the brand')}: {description}. "
-                f"Brand colors: {session.brand_colors or 'professional dark tones'}. "
-                "No text, no logos, dramatic commercial lighting, magazine quality."
-            )
-            # Rotate through scraped reference images
-            ref = [ref_images[bi % len(ref_images)]] if ref_images else None
-            gen = image_gen.generate_image(bg_prompt, aspect_ratio="1:1", reference_urls=ref)
-            if gen.get("ok"):
-                r = _req.get(gen["url"], timeout=30)
-                if r.ok:
-                    if bi == 0:
-                        hook_bytes = r.content
-                    else:
-                        extra_bg.append(r.content)
+        if scraped_imgs:
+            # PRESERVE: use the user's REAL photos directly as slide backgrounds —
+            # never regenerate the property/product, just feature the actual photos.
+            _send(phone, {"kind": "text", "text": "🏡 Using your real photos for the slides..."})
+            real_bytes: list[bytes] = []
+            for u in scraped_imgs[: total_slides]:
+                try:
+                    r = _req.get(u, timeout=30)
+                    if r.ok:
+                        real_bytes.append(r.content)
+                except Exception:
+                    continue
+            if real_bytes:
+                hook_bytes = real_bytes[0]
+                extra_bg   = real_bytes[1:]
+        else:
+            # No real photos → generate branded background images
+            _send(phone, {"kind": "text", "text": f"🎨 Generating {n_bg} background image(s)..."})
+            ref_images = [session.brand_assets[0]] if session.brand_assets else None
+            for bi in range(n_bg):
+                bg_prompt = (
+                    f"Cinematic editorial photo for {brand.get('brand_name','the brand')}: {description}. "
+                    f"Brand colors: {session.brand_colors or 'professional dark tones'}. "
+                    "No text, no logos, dramatic commercial lighting, magazine quality."
+                )
+                ref = [ref_images[bi % len(ref_images)]] if ref_images else None
+                gen = image_gen.generate_image(bg_prompt, aspect_ratio="1:1", reference_urls=ref)
+                if gen.get("ok"):
+                    r = _req.get(gen["url"], timeout=30)
+                    if r.ok:
+                        if bi == 0:
+                            hook_bytes = r.content
+                        else:
+                            extra_bg.append(r.content)
 
         if not hook_bytes:
             raise RuntimeError("Background image generation failed")

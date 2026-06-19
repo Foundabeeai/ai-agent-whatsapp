@@ -50,6 +50,22 @@ def _upload_image_url(url: str, user_id: str) -> Optional[str]:
     return up.get("s3_url") if up.get("ok") else None
 
 
+def _is_square_image(url: str, tol: float = 0.12) -> bool:
+    """True if the image at url is roughly square (within tolerance)."""
+    try:
+        import requests as _req
+        from io import BytesIO as _BytesIO
+        from PIL import Image as _Image
+        r = _req.get(url, timeout=20)
+        r.raise_for_status()
+        w, h = _Image.open(_BytesIO(r.content)).size
+        if not w or not h:
+            return False
+        return abs(w - h) / max(w, h) <= tol
+    except Exception:
+        return False
+
+
 # ── Entry point called by harness ─────────────────────────────────────────
 
 def start(phone: str, session: UserSession, intent: dict) -> dict:
@@ -233,18 +249,22 @@ def handle_step(
                 _send(phone, {"kind": "text",
                               "text": f"🏡 Using the photos from your link.\n🎨 Creating your post: "
                                       f"_{intent.get('description')}_\n⏱ ~90 seconds ☕"}, tts=voice_confirmed)
+                return {"kind": "none"}
+
+            # Link gave us no usable photo → do NOT fabricate a fake product.
+            # Stay in this step and ask for a real photo (or explicit skip).
+            intent["_sub_step"] = "awaiting_product_image"
+            session.agent_intent = intent
+            save_session(session)
+            if any_blocked:
+                txt = ("⚠️ That site blocks automated downloads, so I couldn't grab the photo.\n\n"
+                       "📸 Please *send the photo directly* here and I'll use the real one.\n"
+                       "_(Or reply *skip* to generate a fresh concept image instead.)_")
             else:
-                if any_blocked:
-                    _send(phone, {"kind": "text",
-                                  "text": "⚠️ That site blocks automated access, so I couldn't pull its photos. "
-                                          "Send me a photo of the property and I'll build around it, "
-                                          "or I'll create from your description now."})
-                threading.Thread(
-                    target=_generate_no_image_bg,
-                    args=(phone, session, intent),
-                    daemon=True,
-                ).start()
-            return {"kind": "none"}
+                txt = ("😕 I couldn't pull a usable image from that link.\n\n"
+                       "📸 *Send the photo directly* here, or paste a direct image link, "
+                       "and I'll use the real one.\n_(Or reply *skip* to generate from scratch.)_")
+            return {"kind": "text", "text": txt}
 
         if msg:
             action, _ = classify_action(msg, "product_image", ["skip", "wait"])
@@ -411,15 +431,47 @@ def _generate_with_image_bg(
             "condo", "villa", "for sale", "for rent", "realty", "realtor", "bedroom"))
         preserve_subject = ref_from_scrape or _is_real_estate or intent.get("_url_provided", False)
 
-        # ── GUARANTEED fidelity: use the REAL photo(s), no AI redraw ───────────
-        # For a real subject the user is selling (property/product from their own
-        # photo or link), an img2img redraw always risks altering the subject.
-        # Use the actual photo directly — badge-stamped + sized — so the property
-        # is 100% unchanged. Caption still uses the scraped facts.
+        # ── Preserve the REAL subject, output a professional 1:1 ───────────────
+        # If the photo is already ~square, use it as-is (100% unchanged).
+        # If it's not square, use SeedDream in strict-preserve mode to compose a
+        # professional 1:1 of the SAME subject (extend/restage surroundings only,
+        # never alter the property/product identity).
         if preserve_subject:
-            _send(phone, {"kind": "text",
-                          "text": "🖼 Using your real photo — keeping the property exactly as-is."})
-            s3_urls = _stamp_images([ref_url], session=session, user_id=user_id)
+            is_square = _is_square_image(ref_url)
+            if is_square:
+                _send(phone, {"kind": "text",
+                              "text": "🖼 Using your real photo — keeping it exactly as-is."})
+                s3_urls = _stamp_images([ref_url], session=session, user_id=user_id)
+            else:
+                _send(phone, {"kind": "text",
+                              "text": "🎬 Reframing your photo into a clean 1:1 — same property, "
+                                      "professional composition..."})
+                ad_strict = groq_ai.art_director_analyze(
+                    image_url=ref_url, description=ad_brief, brand=brand,
+                    preserve_subject=True,
+                )
+                square_prompt = (
+                    "Compose as a professional 1:1 square photograph. Keep the ENTIRE subject "
+                    "from the reference fully visible and completely unchanged in structure, "
+                    "identity, colour and materials — only extend/adjust the surrounding scene "
+                    "and lighting naturally to fill a square frame. " + ad_strict.get("prompt", "")
+                )
+                gen = image_gen.generate_product_posts(
+                    prompts=[square_prompt], product_image_url=ref_url,
+                    logo_url=None, aspect_ratio="1:1", preserve_subject=True,
+                )
+                if gen.get("ok") and gen.get("bytes_list"):
+                    s3_tmp = []
+                    for img_bytes in gen["bytes_list"]:
+                        up = aws_storage.upload_bytes(img_bytes, content_type="image/jpeg",
+                                                      extension="jpg", folder=f"{user_id}/posts")
+                        if up.get("ok"):
+                            s3_tmp.append(up["s3_url"])
+                    s3_urls = _stamp_images(s3_tmp or [ref_url], session=session, user_id=user_id)
+                else:
+                    # SeedDream failed → fall back to the real photo (cropped to square)
+                    s3_urls = _stamp_images([ref_url], session=session, user_id=user_id)
+
             caption = groq_ai.generate_caption_with_style(
                 description + scraped_ctx, "image_post",
                 website_url=session.website_url or "",

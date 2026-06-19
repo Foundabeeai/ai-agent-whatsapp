@@ -241,13 +241,44 @@ def _scrape_via_apify(url: str, phone: str) -> dict | None:
     }
 
 
+def _is_direct_image_url(url: str) -> bool:
+    """True if the URL points straight at an image file."""
+    path = urllib.parse.urlparse(url).path.lower()
+    return path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"))
+
+
+def _scrape_direct_image(url: str, phone: str) -> dict | None:
+    """A direct image link → download and use it as the reference photo.
+    The user explicitly chose this image, so skip the quality filter."""
+    if not _is_direct_image_url(url):
+        return None
+    from tools.aws_storage import upload_from_url
+    try:
+        up = upload_from_url(url, user_id=phone, media_kind="product_ref")
+    except Exception as exc:
+        logger.warning("direct image download failed for %s: %s", url, exc)
+        return None
+    if not up.get("ok"):
+        return None
+    return {
+        "url": url, "title": "", "summary": "", "raw_text": "",
+        "image_urls": [up["s3_url"]], "ok": True, "error": None,
+    }
+
+
 def scrape_url(url: str, phone: str) -> dict:
     """
     Full pipeline: fetch page → extract text + images → upload images to S3
     → summarize text with LLM. Returns structured context dict.
 
-    Bot-protected sites (Zillow) are routed through Apify first.
+    Direct image links are downloaded as-is; bot-protected sites (Zillow) go
+    through Apify first; everything else uses the generic scraper.
     """
+    # Direct image URL → just use the image
+    direct = _scrape_direct_image(url, phone)
+    if direct:
+        return direct
+
     # Robust path for sites that block normal scrapers
     apify_ctx = _scrape_via_apify(url, phone)
     if apify_ctx and (apify_ctx["image_urls"] or apify_ctx["summary"]):
