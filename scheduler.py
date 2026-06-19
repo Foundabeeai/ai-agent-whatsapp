@@ -84,8 +84,7 @@ def _post_calendar_to_backend(phone: str, session, days: list[dict]) -> str:
             timeout=15,
         )
         resp.raise_for_status()
-        data = resp.json()
-        url = data.get("calendar_url") or calendar_url(phone)
+        url = calendar_url(phone)  # always use foundabee.com/calendar/{token}
         # Also cache locally so the bot can re-send without hitting the API
         db.save_content_calendar(
             phone_number=phone,
