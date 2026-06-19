@@ -160,13 +160,13 @@ def _build_schemes(brand_colors: dict | None) -> list[dict]:
     # Hook is always photo-bg, overlay handles legibility — scheme just for elements
     hook_bg = "#0D0D0D"
 
-    # Cream slide — secondary or warm neutral
-    cream_bg = secondary if not _is_dark(secondary) else "#EDE8DF"
+    # Light slide — PURE WHITE for maximum contrast with black text (no muddy beige)
+    cream_bg = "#FFFFFF"
 
     # Dark slide — primary or near-black
     dark_bg = primary if _is_dark(primary) else _darken(primary, 0.3)
     if _luminance(dark_bg) > 80:   # force dark enough
-        dark_bg = "#1A1A1A"
+        dark_bg = "#0D0D0D"
 
     # Finale — accent
     fin_bg = accent
@@ -576,6 +576,15 @@ def _content_slide(slide: dict, slide_num: int, total: int, scheme: dict,
         subtext  = (slide.get("body") or "").strip()
         hook_f   = _fnt(max(hl_size, 64), "black")
         sub_f    = _fnt(max(body_sz, 30), "regular")
+
+        # HIGH-CONTRAST guarantee: on a solid (non-photo) slide the text colour MUST
+        # be derived from the background — never a fixed style colour that could clash
+        # (e.g. white text on a beige slide). Photo slides already use white on a veil.
+        if not bg_bytes:
+            bg_hex   = scheme.get("bg", "#111111")
+            text_col = (*_rgb(_on(bg_hex)), 255)        # pure black or white vs bg
+            body_col = (*_rgb(_on(bg_hex)), 230)
+            cta_col  = (*_rgb(_on(bg_hex)), 180)
 
         hl_lines = _wrap(headline.upper() if uppercase else headline, hook_f, max_w)
         sub_lines = _wrap(subtext, sub_f, max_w) if subtext else []
