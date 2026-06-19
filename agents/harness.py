@@ -99,33 +99,37 @@ def route(
     clean = (body or "").strip()
     choice = clean.lower()
 
-    # ── Map legacy numbered menu choices into natural language ──────────────
-    # Users sometimes reply "1", "2", "3" from old menus or habit.
-    _NUM_MAP = {"1": "image post", "2": "carousel", "3": "reel",
-                "📸": "image post", "🎠": "carousel", "🎬": "reel"}
-    if choice in _NUM_MAP and not button_payload:
-        clean = _NUM_MAP[choice]
-        choice = clean
-
-    # ── Detect fresh-start / reset messages ────────────────────────────────
-    # If mid-agent and user sends a greeting or short ambiguous message,
-    # clear agent state and treat as a new conversation.
-    _RESET_WORDS = {
-        "hi", "hello", "hey", "hiya", "sup", "yo", "start", "restart",
-        "reset", "start over", "begin", "new", "menu", "back", "cancel",
-        "stop", "exit", "done", "quit", "skip", "nevermind", "never mind",
-        "forget it", "nvm", "no thanks", "not now",
-    }
     # Sub-agent steps always carry a _sub_step; collecting mode legitimately does not.
     _in_subagent = session.step in (STEP_AGENT_IMAGE_POST, STEP_AGENT_CAROUSEL,
                                      STEP_AGENT_REEL)
     _in_agent    = _in_subagent or session.step == STEP_AGENT_COLLECTING
+
+    # ── Map legacy numbered menu choices into natural language ──────────────
+    # ONLY at the menu/collecting stage — inside a sub-agent, "1/2/3" and "skip"
+    # are legitimate inputs (slide count, skip image, etc.) and must pass through.
+    if not _in_subagent:
+        _NUM_MAP = {"1": "image post", "2": "carousel", "3": "reel",
+                    "📸": "image post", "🎠": "carousel", "🎬": "reel"}
+        if choice in _NUM_MAP and not button_payload:
+            clean = _NUM_MAP[choice]
+            choice = clean
+
+    # ── Detect fresh-start / reset messages ────────────────────────────────
+    # Reset words only break out at the menu/collecting stage. Inside a sub-agent
+    # the agent owns words like "skip"/"done"/"back" as step input.
+    _RESET_WORDS = {
+        "hi", "hello", "hey", "hiya", "sup", "yo", "start", "restart",
+        "reset", "start over", "begin", "new", "menu", "cancel",
+        "stop", "exit", "quit", "nevermind", "never mind", "nvm",
+    }
     # "Stuck" only applies to a real sub-agent step that lost its _sub_step —
     # NOT to collecting mode (which never has a _sub_step by design).
     _sub_step = (session.agent_intent or {}).get("_sub_step", "")
     _stuck = _in_subagent and not _sub_step
     if _in_agent and not button_payload and not media_urls:
-        if choice in _RESET_WORDS or _stuck:
+        # Inside a sub-agent, only an explicit reset word breaks out (not "skip"/"done").
+        _is_reset = choice in _RESET_WORDS
+        if _is_reset or _stuck:
             session.step = STEP_CHOOSE_CONTENT_TYPE
             session.agent_intent = None
             session.agent_missing_field = None
