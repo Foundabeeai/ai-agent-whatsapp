@@ -329,6 +329,8 @@ def generate_greenscreen_portrait(
         "body visible, centered, looking at the camera as if presenting to it. "
         + outfit +
         "Preserve their face, identity and proportions EXACTLY — do not change who they are. "
+        "The clothing must be PLAIN with absolutely NO text, letters, words, numbers, URLs, "
+        "links, logos, writing, slogans, graphics or watermarks anywhere on it or in the image. "
         "Place them against a perfectly uniform solid chroma-key GREEN screen background "
         "(#00b140 green), evenly lit, no shadows on the background, clean edges around hair "
         "and shoulders for easy background removal. Professional, sharp, well-lit, photorealistic."

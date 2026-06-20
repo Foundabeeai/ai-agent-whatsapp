@@ -205,8 +205,7 @@ def _build_stage1(phone: str, session: UserSession, intent: dict) -> None:
         session.agent_intent = intent
         save_session(session)
 
-        _send(phone, {"kind": "media", "text": "🟢 Your presenter on green screen",
-                      "media_url": gs_s3})
+        # (Green-screen image is an internal asset — not shown in chat.)
         if audio_url:
             _send(phone, {"kind": "media", "text": "🎙 Voice-over", "media_url": audio_url})
         _send(phone, {"kind": "text",
