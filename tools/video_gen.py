@@ -19,6 +19,17 @@ import replicate as _replicate
 
 import config
 
+# Pillow 10+ removed Image.ANTIALIAS (and other constants) that moviepy still calls.
+# Shim them to the modern Resampling enums so moviepy resize works.
+try:
+    from PIL import Image as _PILImage
+    for _old, _new in (("ANTIALIAS", "LANCZOS"), ("BICUBIC", "BICUBIC"),
+                       ("BILINEAR", "BILINEAR"), ("NEAREST", "NEAREST")):
+        if not hasattr(_PILImage, _old):
+            setattr(_PILImage, _old, getattr(_PILImage.Resampling, _new))
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 os.environ.setdefault("REPLICATE_API_TOKEN", config.REPLICATE_API_TOKEN)

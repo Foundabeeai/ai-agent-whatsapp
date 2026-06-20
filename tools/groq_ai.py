@@ -1441,8 +1441,10 @@ def analyze_product_image(image_url: str) -> str:
 def detect_gender_from_image(image_url: str) -> str:
     """
     Use Groq vision to detect the apparent gender of the main person in an image,
-    to pick a matching TTS voice. Returns "male" or "female" (defaults "female").
+    to pick a matching TTS voice. Returns "male" or "female".
     """
+    import logging as _log
+    _l = _log.getLogger(__name__)
     try:
         resp = _client().chat.completions.create(
             model=config.GROQ_VISION_MODEL,
@@ -1451,22 +1453,34 @@ def detect_gender_from_image(image_url: str) -> str:
                 "content": [
                     {"type": "image_url", "image_url": {"url": image_url}},
                     {"type": "text", "text": (
-                        "Look at the main person in this image. Reply with ONLY one word: "
-                        "'male' or 'female' — your best guess of their apparent gender for "
-                        "choosing a matching voice-over voice."
+                        "Look closely at the main person in this photo. Decide whether they "
+                        "appear to be a man or a woman, so we can pick a matching voice-over voice. "
+                        "Consider face, hair, build and clothing. "
+                        "Answer with EXACTLY one word, lowercase: 'man' or 'woman'."
                     )},
                 ],
             }],
             temperature=0.0,
-            max_completion_tokens=8,
+            max_completion_tokens=200,   # reasoning headroom — small budgets return empty
             top_p=0.95,
             reasoning_effort="default",
             stop=None,
         )
         ans = (resp.choices[0].message.content or "").strip().lower()
-        return "male" if ans.startswith("m") else "female"
-    except Exception:
-        return "female"
+        _l.info("detect_gender_from_image: raw='%s' for %s", ans[:40], image_url[:60])
+        if "man" in ans and "woman" not in ans:
+            return "male"
+        if "woman" in ans or "female" in ans:
+            return "female"
+        if ans.startswith("m"):
+            return "male"
+        if ans.startswith("f") or ans.startswith("w"):
+            return "female"
+        _l.warning("detect_gender_from_image: unclear answer '%s' — defaulting male", ans[:40])
+        return "male"
+    except Exception as exc:
+        _l.warning("detect_gender_from_image failed (%s) — defaulting male", exc)
+        return "male"
 
 
 def generate_presentation_script(context: str, brand: dict, target_seconds: int = 20) -> str:
