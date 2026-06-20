@@ -137,6 +137,16 @@ def _start_reel_type(
         return {"kind": "none"}
 
     if reel_type == "ugc":
+        # Safety net: a talking reel ABOUT a product/property (or with a link / "show/
+        # background" intent) belongs in the presentation flow, not the plain talking-head.
+        _desc_low = f"{description} {intent.get('style_notes','')}".lower()
+        _presentation_signals = ("property", "listing", "real estate", "house", "home",
+                                 "product", "for sale", "background", "behind", "show",
+                                 "showcase", "presenting", "presentation", "zillow", "http")
+        if description and any(s in _desc_low for s in _presentation_signals):
+            from agents import ugc_presentation_agent
+            return ugc_presentation_agent.start(phone, session, intent)
+
         if description:
             # Pre-fill description and send user to UGC describe step.
             # Workflow.py's STEP_REEL_UGC_DESCRIBE handler will use the description
