@@ -730,6 +730,8 @@ def extract_full_intent(
         "  - Unclear → 'unknown'\n\n"
 
         "reel_type:\n"
+        "  - 'ugc presentation' / 'presentation video' / 'presenter video' / "
+        "'presenting with photos/product behind' / 'me presenting the property' → 'ugc_presentation'\n"
         "  - 'cinematic' / 'product video' / 'product reel' / 'showcase' / 'b-roll' → 'cinematic'\n"
         "  - ANY mention of the user appearing/speaking on camera → 'ugc'. This includes: "
         "'ugc', 'talking head', 'talking video', 'video of me', 'me talking', 'video of myself', "
@@ -1427,6 +1429,64 @@ def analyze_product_image(image_url: str) -> str:
         return (resp.choices[0].message.content or "").strip()
     except Exception:
         return "a product photographed against a plain background"
+
+
+def detect_gender_from_image(image_url: str) -> str:
+    """
+    Use Groq vision to detect the apparent gender of the main person in an image,
+    to pick a matching TTS voice. Returns "male" or "female" (defaults "female").
+    """
+    try:
+        resp = _client().chat.completions.create(
+            model=config.GROQ_VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": (
+                        "Look at the main person in this image. Reply with ONLY one word: "
+                        "'male' or 'female' — your best guess of their apparent gender for "
+                        "choosing a matching voice-over voice."
+                    )},
+                ],
+            }],
+            temperature=0.0,
+            max_completion_tokens=8,
+            top_p=0.95,
+            reasoning_effort="default",
+            stop=None,
+        )
+        ans = (resp.choices[0].message.content or "").strip().lower()
+        return "male" if ans.startswith("m") else "female"
+    except Exception:
+        return "female"
+
+
+def generate_presentation_script(context: str, brand: dict, target_seconds: int = 20) -> str:
+    """
+    Write a spoken presentation script for a UGC presentation reel, based on scraped
+    product/property facts. ~2.5 words/sec → target word count for the desired length.
+    Returns plain spoken words (no stage directions, no hashtags).
+    """
+    target_words = max(28, int(target_seconds * 2.5))
+    brand_ctx = (
+        f"Brand: {brand.get('brand_name') or ''}\n"
+        f"Voice/tone: {brand.get('brand_voice') or 'warm, confident, engaging'}\n"
+    )
+    system = (
+        "You write spoken scripts for a person presenting a product/property/service to "
+        "camera in an Instagram reel. The viewer also sees photos of it behind the presenter.\n"
+        "RULES:\n"
+        f"1. About {target_words} words (~{target_seconds}s spoken). Stay close to this length.\n"
+        "2. Open with a strong hook in the first sentence.\n"
+        "3. Use the REAL facts provided (price, location, features) — be specific, never generic.\n"
+        "4. Natural, conversational, enthusiastic — like a real creator, not an ad read.\n"
+        "5. End with a clear call to action.\n"
+        "6. Output ONLY the spoken words. No emojis, no hashtags, no stage directions, no labels."
+    )
+    user = f"{brand_ctx}\nFacts / context to present:\n{context}\n\nWrite the spoken script."
+    raw = _chat(system, user, temperature=0.75, max_tokens=400).strip()
+    return raw.strip('"').strip("'").strip()
 
 
 def is_logo_image(image_url: str) -> bool:

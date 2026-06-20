@@ -310,6 +310,32 @@ def generate_image_with_reference(
     return {"ok": False, "error": f"Timed out after {_MAX_WAIT}s"}
 
 
+def generate_greenscreen_portrait(
+    person_image_url: str,
+    clothes_prompt: str = "",
+) -> dict:
+    """
+    Put the SAME person from person_image_url on a solid chroma-key GREEN background,
+    framed as a portrait (2:3) suitable for a talking-head overlay.
+    Optionally restyle their clothing via clothes_prompt; otherwise keep their outfit.
+    Returns {"ok": True, "url": "..."} or {"ok": False, "error": "..."}.
+    """
+    outfit = (
+        f"Change their outfit to: {clothes_prompt}. " if clothes_prompt.strip()
+        else "Keep their exact same outfit, hairstyle and appearance. "
+    )
+    prompt = (
+        "Studio portrait of the SAME person from the reference image, head and upper "
+        "body visible, centered, looking at the camera as if presenting to it. "
+        + outfit +
+        "Preserve their face, identity and proportions EXACTLY — do not change who they are. "
+        "Place them against a perfectly uniform solid chroma-key GREEN screen background "
+        "(#00b140 green), evenly lit, no shadows on the background, clean edges around hair "
+        "and shoulders for easy background removal. Professional, sharp, well-lit, photorealistic."
+    )
+    return generate_image_with_reference(prompt, person_image_url, aspect_ratio="2:3")
+
+
 def generate_images(
     prompts: list[str],
     content_type: str = "image_post",

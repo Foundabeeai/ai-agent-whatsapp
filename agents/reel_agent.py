@@ -56,6 +56,11 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
     voice_ok    = intent.get("_voice_confirmed", False)
     has_image   = bool(media_urls and any(t.startswith("image/") for t in media_types))
 
+    # UGC Presentation Video is its own multi-stage sub-agent
+    if reel_type == "ugc_presentation":
+        from agents import ugc_presentation_agent
+        return ugc_presentation_agent.start(phone, session, intent)
+
     if not reel_type or reel_type not in _REEL_TYPES:
         intent["_sub_step"] = "awaiting_reel_type"
         session.agent_intent = intent
@@ -195,6 +200,12 @@ def handle_step(
     intent   = session.agent_intent or {}
     sub_step = intent.get("_sub_step", "")
     choice   = (button_payload or clean).lower().strip()
+
+    # UGC Presentation Video handles all its own steps
+    if intent.get("reel_type") == "ugc_presentation":
+        from agents import ugc_presentation_agent
+        return ugc_presentation_agent.handle_step(
+            phone, session, clean, button_payload, media_urls, media_types, voice_confirmed)
 
     # ── Still need to know reel type ──────────────────────────────────────
     if sub_step == "awaiting_reel_type":
