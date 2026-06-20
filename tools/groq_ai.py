@@ -12,6 +12,10 @@ def _client() -> Groq:
 
 
 def _chat(system: str, user: str, temperature: float = 1.0, max_tokens: int = 8192) -> str:
+    # reasoning_effort="medium" spends part of max_completion_tokens on hidden reasoning.
+    # If a caller passes a small budget (e.g. 80-400), the reasoning can consume it all and
+    # the visible answer comes back EMPTY. Always leave generous headroom for the output.
+    effective_max = max(max_tokens, 1500)
     resp = _client().chat.completions.create(
         model=config.GROQ_MODEL,
         messages=[
@@ -19,7 +23,7 @@ def _chat(system: str, user: str, temperature: float = 1.0, max_tokens: int = 81
             {"role": "user",   "content": user},
         ],
         temperature=temperature,
-        max_completion_tokens=max_tokens,
+        max_completion_tokens=effective_max,
         top_p=1,
         reasoning_effort="medium",
         stop=None,
@@ -1488,7 +1492,9 @@ def generate_presentation_script(context: str, brand: dict, target_seconds: int 
         "6. Output ONLY the spoken words. No emojis, no hashtags, no stage directions, no labels."
     )
     user = f"{brand_ctx}\nFacts / context to present:\n{context}\n\nWrite the spoken script."
-    raw = _chat(system, user, temperature=0.75, max_tokens=400).strip()
+    # NOTE: reasoning_effort="medium" consumes part of max_completion_tokens, so keep
+    # the budget large enough that the actual script isn't truncated to empty.
+    raw = _chat(system, user, temperature=0.75, max_tokens=2000).strip()
     return raw.strip('"').strip("'").strip()
 
 
