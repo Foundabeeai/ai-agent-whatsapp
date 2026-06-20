@@ -701,3 +701,133 @@ def _fetch(url: str, timeout: int = 120) -> bytes:
     r = requests.get(url, timeout=timeout)
     r.raise_for_status()
     return r.content
+
+
+# ---------------------------------------------------------------------------
+# UGC Presentation: slideshow + chromakey overlay
+# ---------------------------------------------------------------------------
+
+_CHROMA_GREEN = (0, 177, 64)   # #00b140 — must match the green-screen image
+
+
+def _cover_9x16(img_bytes: bytes, size=(1080, 1920)):
+    """Crop/scale an image to fill a 9:16 frame (cover), return a numpy RGB array."""
+    from io import BytesIO as _BytesIO
+    from PIL import Image as _Image
+    import numpy as _np
+    cw, ch = size
+    im = _Image.open(_BytesIO(img_bytes)).convert("RGB")
+    sw, sh = im.size
+    scale = max(cw / sw, ch / sh)
+    nw, nh = max(1, int(sw * scale)), max(1, int(sh * scale))
+    im = im.resize((nw, nh), _Image.LANCZOS)
+    left, top = (nw - cw) // 2, (nh - ch) // 2
+    im = im.crop((left, top, left + cw, top + ch))
+    return _np.array(im)
+
+
+def compose_presentation_video(
+    lipsync_bytes: bytes,
+    photo_urls: list[str],
+    output_fps: int = 24,
+) -> dict:
+    """
+    Build the UGC presentation reel:
+      - background = slideshow of the scraped product/property photos (9:16), timed
+        to the talking-video length
+      - foreground = the green-screen talking person with the green removed (chromakey)
+      The presenter's audio is preserved.
+    Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
+    """
+    try:
+        import tempfile, os as _os, shutil
+        from moviepy.editor import (VideoFileClip, ImageClip,
+                                    concatenate_videoclips, CompositeVideoClip)
+        from moviepy.video.fx.all import mask_color
+
+        W, H = 1080, 1920
+        tmp = tempfile.mkdtemp()
+        base_path = _os.path.join(tmp, "talk.mp4")
+        with open(base_path, "wb") as f:
+            f.write(lipsync_bytes)
+
+        talk = VideoFileClip(base_path)
+        D = talk.duration or 10.0
+
+        # ── Background slideshow from photos (cover to 9:16) ────────────────
+        imgs = []
+        for u in (photo_urls or [])[:12]:
+            try:
+                imgs.append(_cover_9x16(_fetch(u, timeout=40)))
+            except Exception:
+                continue
+        if imgs:
+            per = max(1.5, D / len(imgs))
+            slides = [ImageClip(arr).set_duration(per) for arr in imgs]
+            slideshow = concatenate_videoclips(slides, method="compose").set_duration(D)
+        else:
+            # no photos → plain dark background
+            from moviepy.editor import ColorClip
+            slideshow = ColorClip(size=(W, H), color=(15, 15, 15)).set_duration(D)
+        slideshow = slideshow.resize((W, H))
+
+        # ── Foreground talking person, green removed ───────────────────────
+        person = (talk
+                  .fx(mask_color, color=list(_CHROMA_GREEN), thr=120, s=12)
+                  .resize((W, H))
+                  .set_position("center")
+                  .set_duration(D))
+
+        final = CompositeVideoClip([slideshow, person], size=(W, H)).set_duration(D)
+        if talk.audio is not None:
+            final = final.set_audio(talk.audio)
+
+        out_path = _os.path.join(tmp, "presentation.mp4")
+        final.write_videofile(out_path, fps=output_fps, codec="libx264",
+                              audio_codec="aac" if talk.audio is not None else None,
+                              verbose=False, logger=None)
+        final.close(); talk.close()
+        with open(out_path, "rb") as f:
+            data = f.read()
+        shutil.rmtree(tmp, ignore_errors=True)
+        return {"ok": True, "bytes": data}
+    except Exception as exc:
+        logger.error("compose_presentation_video failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+_AUTOCAPTION_MODEL = ("fictions-ai/autocaption:"
+                      "18a45ff0d95feb4449d192bbdc06b4a6df168fa33def76dfc51b78ae224b599b")
+
+
+def add_autocaption(video_bytes: bytes) -> bytes | None:
+    """
+    Burn animated captions onto a video using fictions-ai/autocaption.
+    Falls back to the TikTok-caption model, then to the original video.
+    """
+    if not config.REPLICATE_API_TOKEN:
+        return video_bytes
+    try:
+        from tools import aws_storage as _s3
+        up = _s3.upload_bytes(video_bytes, content_type="video/mp4", extension="mp4",
+                              folder=f"{config.AWS_BASE_DIR}/tmp/autocaption_in")
+        if not up.get("ok"):
+            return video_bytes
+        video_url = up["s3_url"]
+        try:
+            output = _replicate.run(_AUTOCAPTION_MODEL, input={
+                "video_file_input": video_url,
+                "output_video": True,
+                "fps": 30,
+            })
+            url = _resolve_url(output)
+            if url:
+                return _fetch(url, timeout=180)
+        except Exception as exc:
+            logger.warning("autocaption (fictions-ai) failed, trying fallback: %s", exc)
+        # Fallback to the existing tiktok-caption helper
+        fb = add_tiktok_captions(video_bytes)
+        return fb or video_bytes
+    except Exception as exc:
+        logger.warning("add_autocaption error: %s", exc)
+        return video_bytes

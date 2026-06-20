@@ -134,13 +134,16 @@ def handle_step(
     if sub_step == "generating_assets":
         return {"kind": "text", "text": "⏳ Still building your presentation — hang tight!"}
 
-    # ── Approve the green-screen + script ──────────────────────────────────
+    # ── Approve the script/voice → build the full video ────────────────────
     if sub_step == "awaiting_assets_ok":
         if low in ("approve", "yes", "ok", "okay", "go", "looks good", "perfect", "next", "continue"):
+            intent["_sub_step"] = "building_video"
+            session.agent_intent = intent
+            save_session(session)
             _send(phone, {"kind": "text",
-                          "text": "🎬 Great! Building the talking video + slideshow next... (this stage is "
-                                  "coming online — your green-screen image, script and voice-over are ready)."})
-            # STAGE 2+ hook: talking video → slideshow → chromakey → captions → publish
+                          "text": "🎬 Building your video — talking presenter + photo slideshow + captions.\n"
+                                  "⏱ This takes a few minutes (the lip-sync step is the slow part). I'll send it when ready."})
+            threading.Thread(target=_build_full_video, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
         if "regenerate" in low or "again" in low:
             intent["_sub_step"] = "generating_assets"
@@ -148,10 +151,108 @@ def handle_step(
             save_session(session)
             threading.Thread(target=_build_stage1, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
-        return {"kind": "text", "text": "Reply *approve* to continue, or *regenerate* to redo. 🎥"}
+        return {"kind": "text", "text": "Reply *approve* to build the video, or *regenerate* to redo. 🎥"}
+
+    if sub_step == "building_video":
+        return {"kind": "text", "text": "⏳ Still rendering your video — hang tight, almost there!"}
+
+    # ── Final video approval → publish ─────────────────────────────────────
+    if sub_step == "awaiting_final_publish":
+        if low in ("post", "post now", "publish", "yes", "approve", "go", "now", "ok", "okay"):
+            threading.Thread(target=_publish_final, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "text", "text": "📤 Publishing your reel to Instagram..."}
+        if low in ("skip", "no", "later", "cancel"):
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            session.agent_intent = None
+            save_session(session)
+            return {"kind": "text", "text": "👍 Saved as draft. Type *create* anytime."}
+        if "regenerate" in low or "again" in low:
+            intent["_sub_step"] = "building_video"
+            session.agent_intent = intent
+            save_session(session)
+            threading.Thread(target=_build_full_video, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "text", "text": "🔄 Rebuilding the video..."}
+        return {"kind": "text", "text": "Reply *post now* to publish, *regenerate* to rebuild, or *skip*."}
 
     # Unknown → restart presenter selection
     return start(phone, session, intent)
+
+
+# ── Stages 2-5: full video build ─────────────────────────────────────────────
+
+def _build_full_video(phone: str, session: UserSession, intent: dict) -> None:
+    from tools import video_gen
+    try:
+        greenscreen_url = intent.get("_greenscreen_url", "")
+        audio_url       = intent.get("_audio_url", "")
+        photos          = intent.get("_scraped_photos", [])
+        if not greenscreen_url or not audio_url:
+            raise RuntimeError("missing green-screen image or voice-over")
+
+        # Stage 2 — talking-head lip-sync (veed/fabric-1.0)
+        _send(phone, {"kind": "text", "text": "🗣 Step 1/3 — animating your presenter (lip-sync)..."})
+        lip = video_gen.generate_lipsync_video(greenscreen_url, audio_url, resolution="720p")
+        if not lip.get("ok") or not lip.get("bytes"):
+            raise RuntimeError(f"lip-sync failed: {lip.get('error')}")
+
+        # Stage 3+4 — slideshow behind + chromakey the presenter on top
+        _send(phone, {"kind": "text", "text": "🖼 Step 2/3 — placing you in front of the property photos..."})
+        comp = video_gen.compose_presentation_video(lip["bytes"], photos)
+        if not comp.get("ok") or not comp.get("bytes"):
+            raise RuntimeError(f"composition failed: {comp.get('error')}")
+
+        # Stage 5 — burned-in captions
+        _send(phone, {"kind": "text", "text": "💬 Step 3/3 — adding captions..."})
+        final_bytes = video_gen.add_autocaption(comp["bytes"]) or comp["bytes"]
+
+        # Upload final video
+        up = aws_storage.upload_bytes(final_bytes, content_type="video/mp4",
+                                      extension="mp4", folder=f"{phone}/ugc_presentation")
+        final_url = up.get("s3_url")
+        if not final_url:
+            raise RuntimeError("final upload failed")
+        intent["_final_video_url"] = final_url
+        intent["_sub_step"] = "awaiting_final_publish"
+        session.agent_intent = intent
+        save_session(session)
+
+        _send(phone, {"kind": "media", "text": "🎬 Your UGC presentation reel is ready!",
+                      "media_url": final_url})
+        _send(phone, {"kind": "text",
+                      "text": "Reply:\n✅ *post now* — publish to Instagram\n🔄 *regenerate* — rebuild\n⏭ *skip* — save as draft"})
+    except Exception as exc:
+        logger.exception("ugc_presentation _build_full_video failed: %s", exc)
+        intent["_sub_step"] = "awaiting_assets_ok"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text",
+                      "text": f"😕 Video build failed: {exc}\nReply *approve* to try again or *regenerate*."})
+
+
+def _publish_final(phone: str, session: UserSession, intent: dict) -> None:
+    from tools import zerini
+    try:
+        final_url = intent.get("_final_video_url", "")
+        caption   = intent.get("_script", "")
+        result = zerini.publish_now(
+            account_id=session.zerini_account_id or "",
+            image_urls=[final_url],
+            caption=caption,
+            content_type="reel",
+            profile_id=session.zerini_profile_id or "",
+        )
+        db.log_post(phone_number=phone, content_type="reel", image_urls=[final_url],
+                    caption=caption, prompts=[], status="published" if result.get("ok") else "failed")
+        session.step = STEP_CHOOSE_CONTENT_TYPE
+        session.agent_intent = None
+        save_session(session)
+        if result.get("ok"):
+            _send(phone, {"kind": "text", "text": "✅ *Posted to Instagram!* 🎉 What's next?"}, tts=True)
+        else:
+            _send(phone, {"kind": "text", "text": f"😕 Publish failed: {result.get('error')}"})
+    except Exception as exc:
+        logger.exception("ugc_presentation _publish_final failed: %s", exc)
+        _send(phone, {"kind": "text", "text": f"😕 Publish failed: {exc}"})
 
 
 # ── Stage 1 background worker ────────────────────────────────────────────────
