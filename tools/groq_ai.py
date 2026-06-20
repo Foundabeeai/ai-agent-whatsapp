@@ -835,6 +835,65 @@ def extract_full_intent(
         }
 
 
+def classify_message_routing(
+    user_message: str,
+    step_purpose: str,
+    has_media: bool = False,
+) -> str:
+    """
+    State-aware top-level router. Given what the bot is CURRENTLY waiting for
+    (step_purpose) and the user's new message, decide how to handle it:
+
+      "continue" — the message answers / responds to the current question or step
+      "new"      — the user is starting a DIFFERENT content request, ignoring the
+                   current step (e.g. mid-reel they say "actually make a post about X")
+      "command"  — a global command: reset/cancel/start over/menu/help
+
+    Fast-pathed for obvious cases; LLM for ambiguous ones.
+    """
+    import re as _re
+    msg = (user_message or "").strip()
+    low = msg.lower()
+
+    # Fast paths
+    _COMMANDS = {"reset", "restart", "start over", "start again", "cancel", "menu",
+                 "stop", "exit", "quit", "nevermind", "never mind", "nvm"}
+    if low in _COMMANDS:
+        return "command"
+    if not msg and has_media:
+        return "continue"          # a bare photo/voice answers the current step
+    if not msg:
+        return "continue"
+
+    system = (
+        "You route messages for BeeQ, a WhatsApp social-media agent. "
+        "The bot is currently at a specific step and waiting for something. "
+        "Decide how to handle the user's new message.\n\n"
+        "Return ONLY one word:\n"
+        "  continue — the message is responding to / answering the current step\n"
+        "  new      — the user is clearly starting a DIFFERENT content request, "
+        "abandoning the current step (e.g. 'actually, make a carousel about X', "
+        "'forget that, post about my sale')\n"
+        "  command  — a global command: reset, cancel, start over, menu, help\n\n"
+        "Default to 'continue' unless the user clearly wants something different. "
+        "A short answer, a topic, a number, a yes/no, an edit, or 'skip' is 'continue'."
+    )
+    user = (
+        f"The bot is currently: {step_purpose}\n"
+        f"User's new message: \"{msg}\"\n"
+        f"Media attached: {has_media}\n\n"
+        "Answer with one word: continue, new, or command."
+    )
+    try:
+        raw = _chat(system, user, temperature=0.0, max_tokens=8).strip().lower()
+        raw = _re.sub(r"[^a-z]", "", raw)
+        if raw in {"continue", "new", "command"}:
+            return raw
+    except Exception:
+        pass
+    return "continue"
+
+
 def understand_intent(user_message: str, context: str = "") -> str:
     """
     Use Groq to understand free-form user messages and normalize intent.

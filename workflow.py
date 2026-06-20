@@ -1636,6 +1636,73 @@ def handle_incoming_message(
         STEP_AGENT_CAROUSEL,
         STEP_AGENT_REEL,
     }
+
+    # ══════════════════════════════════════════════════════════════════════
+    # ── UNIVERSAL LLM INTERCEPT ────────────────────────────────────────────
+    # For verified + onboarded users on any CONTENT step (not onboarding, not a
+    # busy/processing step), an LLM looks at the current step + the message and
+    # decides: continue this flow, start a NEW request, or run a global command.
+    # This means every message is understood in context by the LLM, and a user
+    # can pivot to a new request from inside any flow.
+    # ══════════════════════════════════════════════════════════════════════
+    _STEP_PURPOSE = {
+        STEP_CHOOSE_CONTENT_TYPE:      "asking what the user wants to create",
+        STEP_COLLECT_DESCRIPTION:      "asking for the topic/description of the content",
+        STEP_CHOOSE_PUBLISH_ACTION:    "asking whether to publish now or schedule",
+        STEP_AWAITING_SCHEDULE_TIME:   "asking for a date/time to schedule the post",
+        STEP_CHOOSE_CAPTION:           "asking how to caption the post",
+        STEP_AWAITING_CUSTOM_CAPTION:  "waiting for the user's custom caption text",
+        STEP_AWAITING_IMAGE_APPROVAL:  "asking the user to approve the generated image",
+        STEP_COLLECT_PRODUCT_IMAGE:    "asking for a product image",
+        STEP_REEL_TYPE_SELECT:         "asking which reel type (cinematic/ugc/ad)",
+        STEP_REEL_PRODUCT_IMAGE:       "asking for a product image for the reel",
+        STEP_REEL_DESCRIBE_PRODUCT:    "asking for a description of the product for the reel",
+        STEP_REEL_UGC_DESCRIBE:        "asking what the UGC talking-head reel is about",
+        STEP_REEL_UGC_SCRIPT_REVIEW:   "asking the user to approve the UGC script",
+        STEP_REEL_USER_PHOTO:          "asking for the user's photo for the reel",
+        STEP_REEL_VOICE_SELECT:        "asking which voice to use for the reel",
+        STEP_REEL_AD_PRODUCT_IMAGE:    "asking for a product image for the ad reel",
+        STEP_REEL_AD_DESCRIBE:         "asking for the ad reel description",
+        STEP_REEL_AD_SCRIPT_REVIEW:    "asking the user to approve the ad script",
+        STEP_REEL_AD_USER_PHOTO:       "asking for the user's photo for the ad reel",
+        STEP_DAILY_SUGGESTION:         "showing today's suggested post; awaiting post now / schedule / skip",
+        STEP_INITIAL_CONTENT_REVIEW:   "showing initial content; awaiting publish / skip",
+    }
+    # Steps where the LLM must NOT intercept (busy/processing or guided onboarding).
+    _NO_INTERCEPT = {
+        STEP_GENERATING, STEP_PUBLISHING, STEP_REEL_APPROVAL, STEP_VERIFYING_EMAIL,
+        STEP_RECHECKING_PLAN, STEP_VOICE_CONFIRM,
+    }
+    if (session.onboarding_complete
+            and session.step not in _HARNESS_STEPS
+            and session.step not in _NO_INTERCEPT
+            and session.step in _STEP_PURPOSE
+            and not button_payload):
+        try:
+            _routing = groq_ai.classify_message_routing(
+                user_message=clean,
+                step_purpose=_STEP_PURPOSE[session.step],
+                has_media=bool(media_urls),
+            )
+        except Exception:
+            _routing = "continue"
+
+        if _routing in ("new", "command"):
+            # Pivot to a fresh request — clear any in-flight flow and hand to harness
+            from agents import harness as _harness
+            session.reset_flow()
+            session.agent_intent = None
+            session.agent_missing_field = None
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            save_session(session)
+            if _routing == "command":
+                return _harness._ask_what_to_create(phone, session)
+            return _harness.route(
+                phone=phone, session=session, body=clean,
+                button_payload=None, media_urls=media_urls, media_types=media_types,
+                audio_transcript=None, voice_confirmed=False,
+            )
+        # _routing == "continue" → fall through to the existing step handler below
     _VOICE_CONFIRMED_THIS_TURN = (
         session.step == STEP_VOICE_CONFIRM  # was voice_confirm just now — but we already cleared it above
     )
