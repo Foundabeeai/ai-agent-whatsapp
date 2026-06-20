@@ -53,12 +53,16 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
     return {
         "kind": "text",
         "text": (
-            "🎥 *UGC Presentation Video*\n\n"
-            "Who should present it?\n"
+            "🎥 *UGC Presentation Video* — here's how it works:\n"
+            "  *Step 1* → pick who presents\n"
+            "  *Step 2* → send the product/property link\n"
+            "  Then I build everything (presenter + voice-over + photos behind them) and "
+            "send it for your approval.\n\n"
+            "*Step 1 — who should present?*\n"
             "1️⃣ *Maya* — female avatar\n"
             "2️⃣ *George* — male avatar\n"
             "📸 Or *send your own photo*\n\n"
-            "_(You can also tell me to change the outfit, e.g. \"me in a navy suit\".)_"
+            "_Tip: you can also change the outfit — e.g. \"me in a navy suit\"._"
         ),
     }
 
@@ -107,8 +111,9 @@ def handle_step(
         session.agent_intent = intent
         save_session(session)
         return {"kind": "text",
-                "text": "👍 Got your presenter!\n\n🔗 Now send the *product / property link* "
-                        "(Zillow, store page, etc.) — I'll pull the details and photos to build the video."}
+                "text": "👍 Presenter set!\n\n*Step 2 — send the product/property link* 🔗\n"
+                        "(e.g. your Zillow listing or store page). I'll pull the details and photos, "
+                        "then build the whole video automatically."}
 
     # ── Collect the link, then build Stage-1 assets ────────────────────────
     if sub_step == "awaiting_link":
