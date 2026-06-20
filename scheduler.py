@@ -376,9 +376,10 @@ def _send_post_suggestion(phone, session, brand, brand_name, wf, date_str: str |
 
     prompts = groq_ai.generate_image_prompts(description, count=1, brand=brand)
     prompt_text = prompts[0] if prompts else description
-    image_url_raw = image_gen.generate_image(prompt_text, aspect_ratio="1:1")
-    if not image_url_raw:
-        raise RuntimeError("image generation returned None")
+    gen = image_gen.generate_image(prompt_text, aspect_ratio="1:1")
+    if not isinstance(gen, dict) or not gen.get("ok") or not gen.get("url"):
+        raise RuntimeError(f"image generation failed: {gen}")
+    image_url_raw = gen["url"]
 
     # Always upload to S3 (never rely on Replicate URL)
     logo_url = session.brand_logo_url
@@ -692,10 +693,10 @@ def _generate_and_schedule_future_post(
         if content_type == "image_post":
             prompts   = groq_ai.generate_image_prompts(description, count=1, brand=brand)
             prompt    = prompts[0] if prompts else description
-            image_url = image_gen.generate_image(prompt, aspect_ratio="1:1")
-            if not image_url:
-                raise RuntimeError("image generation returned None")
-            s3_url = _upload_to_s3(image_url, folder="scheduled")
+            gen       = image_gen.generate_image(prompt, aspect_ratio="1:1")
+            if not isinstance(gen, dict) or not gen.get("ok") or not gen.get("url"):
+                raise RuntimeError(f"image generation failed: {gen}")
+            s3_url = _upload_to_s3(gen["url"], folder="scheduled")
             caption = groq_ai.generate_caption(description, "image_post", brand.get("website_url", ""))
             result  = zerini.schedule_post(
                 account_id=session.zerini_account_id or "",
