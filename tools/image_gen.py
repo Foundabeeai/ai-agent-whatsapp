@@ -310,15 +310,41 @@ def generate_image_with_reference(
     return {"ok": False, "error": f"Timed out after {_MAX_WAIT}s"}
 
 
+_CHROMA_GREEN = (0, 177, 64)   # #00b140
+
+
+def _pad_to_9x16_green(img_bytes: bytes, canvas=(1080, 1920)) -> bytes:
+    """
+    Place a generated portrait on a 9:16 chroma-green canvas WITHOUT stretching:
+    scale to fit (contain), center, fill the rest with the same green so the
+    chroma-key stays seamless. Returns JPEG bytes at exactly 9:16.
+    """
+    from io import BytesIO as _BytesIO
+    from PIL import Image as _Image
+    cw, ch = canvas
+    src = _Image.open(_BytesIO(img_bytes)).convert("RGB")
+    sw, sh = src.size
+    scale = min(cw / sw, ch / sh)          # contain — never upscale-distort the person
+    nw, nh = max(1, int(sw * scale)), max(1, int(sh * scale))
+    src = src.resize((nw, nh), _Image.LANCZOS)
+    bg = _Image.new("RGB", (cw, ch), _CHROMA_GREEN)
+    bg.paste(src, ((cw - nw) // 2, (ch - nh) // 2))
+    out = _BytesIO()
+    bg.save(out, "JPEG", quality=92, optimize=True)
+    return out.getvalue()
+
+
 def generate_greenscreen_portrait(
     person_image_url: str,
     clothes_prompt: str = "",
+    user_id: str = "ugc",
 ) -> dict:
     """
     Put the SAME person from person_image_url on a solid chroma-key GREEN background,
-    framed as a portrait (2:3) suitable for a talking-head overlay.
-    Optionally restyle their clothing via clothes_prompt; otherwise keep their outfit.
-    Returns {"ok": True, "url": "..."} or {"ok": False, "error": "..."}.
+    output as a true 9:16 portrait (1080x1920) for a reel overlay — no stretching.
+    SeedDream renders the person at 2:3 (its best portrait, preserves proportions);
+    we then pad onto a 9:16 green canvas and upload to S3.
+    Returns {"ok": True, "url": "<9:16 S3 url>"} or {"ok": False, "error": "..."}.
     """
     outfit = (
         f"Change their outfit to: {clothes_prompt}. " if clothes_prompt.strip()
@@ -328,14 +354,32 @@ def generate_greenscreen_portrait(
         "Studio portrait of the SAME person from the reference image, head and upper "
         "body visible, centered, looking at the camera as if presenting to it. "
         + outfit +
-        "Preserve their face, identity and proportions EXACTLY — do not change who they are. "
+        "Preserve their face, identity and natural body proportions EXACTLY — do not "
+        "stretch, squash or distort them, and do not change who they are. "
         "The clothing must be PLAIN with absolutely NO text, letters, words, numbers, URLs, "
         "links, logos, writing, slogans, graphics or watermarks anywhere on it or in the image. "
         "Place them against a perfectly uniform solid chroma-key GREEN screen background "
         "(#00b140 green), evenly lit, no shadows on the background, clean edges around hair "
         "and shoulders for easy background removal. Professional, sharp, well-lit, photorealistic."
     )
-    return generate_image_with_reference(prompt, person_image_url, aspect_ratio="2:3")
+    gen = generate_image_with_reference(prompt, person_image_url, aspect_ratio="2:3")
+    if not gen.get("ok") or not gen.get("url"):
+        return gen
+
+    # Pad to true 9:16 on matching green, then upload
+    try:
+        import requests as _req
+        from tools import aws_storage as _s3
+        raw = _req.get(gen["url"], timeout=60).content
+        padded = _pad_to_9x16_green(raw)
+        up = _s3.upload_bytes(padded, content_type="image/jpeg", extension="jpg",
+                              folder=f"{user_id}/greenscreen")
+        if up.get("ok"):
+            return {"ok": True, "url": up["s3_url"]}
+        return {"ok": True, "url": gen["url"]}   # fall back to raw 2:3 if upload fails
+    except Exception as exc:
+        logger.warning("green-screen 9:16 pad failed: %s", exc)
+        return {"ok": True, "url": gen["url"]}
 
 
 def generate_images(

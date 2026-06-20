@@ -177,17 +177,13 @@ def _build_stage1(phone: str, session: UserSession, intent: dict) -> None:
         intent["_scraped_photos"]  = photos
         intent["_scraped_facts"]   = facts
 
-        # 2) Green-screen presenter (keeps identity, optional outfit change)
-        _send(phone, {"kind": "text", "text": "🟢 Placing your presenter on a green screen..."})
-        gs = image_gen.generate_greenscreen_portrait(presenter_url, clothes_prompt=clothes_prompt)
-        if not gs.get("ok"):
+        # 2) Green-screen presenter — true 9:16, no stretching (keeps identity)
+        _send(phone, {"kind": "text", "text": "🟢 Placing your presenter on a green screen (9:16)..."})
+        gs = image_gen.generate_greenscreen_portrait(
+            presenter_url, clothes_prompt=clothes_prompt, user_id=phone)
+        if not gs.get("ok") or not gs.get("url"):
             raise RuntimeError(f"green-screen generation failed: {gs.get('error')}")
-        import requests as _req
-        gs_bytes = _req.get(gs["url"], timeout=60).content
-        gs_up = aws_storage.upload_bytes(gs_bytes, content_type="image/jpeg",
-                                         extension="jpg", folder=f"{phone}/ugc_presentation")
-        gs_s3 = gs_up.get("s3_url") or gs["url"]
-        intent["_greenscreen_url"] = gs_s3
+        intent["_greenscreen_url"] = gs["url"]   # already a 9:16 S3 URL
 
         # 3) Gender → voice, write script, synth audio
         gender = groq_ai.detect_gender_from_image(presenter_url)
