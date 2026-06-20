@@ -301,11 +301,14 @@ def _handle_collecting(
     ctx = _session_context(session)
     prior_desc = partial.get("description", "")
     prior_ct   = partial.get("content_type", "unknown")
+    prior_reel = partial.get("reel_type")
 
-    # Build a combined message: prior context + user's new answer
+    # Build a combined message: prior context + user's new answer (accumulate across turns)
     combined = clean
     if prior_ct and prior_ct != "unknown":
         combined = f"Content type: {prior_ct}. " + combined
+    if prior_reel:
+        combined = f"Reel style: {prior_reel}. " + combined
     if prior_desc and prior_desc not in combined:
         combined = f"Topic: {prior_desc}. " + combined
     if scraped_contexts:
@@ -324,6 +327,9 @@ def _handle_collecting(
     new_intent["_media_urls"]  = media_urls or partial.get("_media_urls", [])
     new_intent["_media_types"] = media_types or partial.get("_media_types", [])
     new_intent["_voice_confirmed"] = voice_confirmed
+    # Never lose a reel_type we already knew
+    if not new_intent.get("reel_type") and prior_reel:
+        new_intent["reel_type"] = prior_reel
     # A link given now OR earlier in this conversation means: don't ask for an image
     new_intent["_url_provided"] = bool(found_urls) or partial.get("_url_provided", False)
     if scraped_contexts:

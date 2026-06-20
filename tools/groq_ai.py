@@ -730,10 +730,12 @@ def extract_full_intent(
         "  - Unclear → 'unknown'\n\n"
 
         "reel_type:\n"
-        "  - 'cinematic' / 'product video' / 'product reel' → 'cinematic'\n"
-        "  - 'ugc' / 'talking head' / 'my face' / 'selfie video' → 'ugc'\n"
-        "  - 'ad' / 'advertisement' → 'ad'\n"
-        "  - Not specified for reel → null (will ask)\n\n"
+        "  - 'cinematic' / 'product video' / 'product reel' / 'showcase' / 'b-roll' → 'cinematic'\n"
+        "  - ANY mention of the user appearing/speaking on camera → 'ugc'. This includes: "
+        "'ugc', 'talking head', 'talking video', 'video of me', 'me talking', 'video of myself', "
+        "'my face', 'selfie video', 'i want to talk', 'me speaking', 'record myself', 'vlog'.\n"
+        "  - 'ad' / 'advertisement' / 'commercial' / 'promo' → 'ad'\n"
+        "  - Only null if the reel style is genuinely unclear after the above.\n\n"
 
         "use_reference_image:\n"
         "  - Image is attached AND user wants a post made FROM it → true\n"

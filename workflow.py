@@ -3093,14 +3093,21 @@ def handle_incoming_message(
     # STEP: daily_suggestion — user reviewing today's proactive content
     # ------------------------------------------------------------------
     if session.step == STEP_DAILY_SUGGESTION:
+        import re as _re_ds
         choice = _choice(body, button_payload).lower()
+        tokens = set(_re_ds.findall(r"[a-z]+", choice))   # whole words only — avoids "no" in "now"
         suggestion = session.daily_suggestion or {}
         content_type = suggestion.get("content_type", "image_post")
         post_id = suggestion.get("post_id")
         reel_type = suggestion.get("reel_type")
 
-        # ── Skip ──
-        if any(w in choice for w in ("skip", "dismiss", "no", "next", "later", "pass")):
+        _wants_publish  = bool(tokens & {"post", "publish", "approve", "yes", "go", "ok",
+                                          "okay", "sure", "now", "send"}) or "✅" in choice
+        _wants_schedule = bool(tokens & {"schedule", "later", "time"}) or "⏰" in choice
+        _wants_skip     = bool(tokens & {"skip", "dismiss", "no", "next", "pass", "nope"})
+
+        # ── Skip (only if not also asking to publish/schedule) ──
+        if _wants_skip and not _wants_publish and not _wants_schedule:
             import scheduler as _sched
             _sched._mark_calendar_day(phone, "skipped")
             session.step = STEP_CHOOSE_CONTENT_TYPE
@@ -3110,7 +3117,7 @@ def handle_incoming_message(
             return {"kind": "text", "text": "No problem! Type *create* anytime to make something. 🐝"}
 
         # ── Reel: make it ──
-        if content_type == "reel" and any(w in choice for w in ("make", "yes", "start", "create", "go", "ok", "okay", "sure", "post now", "post")):
+        if content_type == "reel" and (_wants_publish or bool(tokens & {"make", "start", "create"})):
             # Pre-fill reel type and route to reel flow
             session.reel_type = reel_type or "cinematic"
             session.content_type = "reel"
@@ -3124,8 +3131,15 @@ def handle_incoming_message(
             return {"kind": "text", "text": f"🎬 Let's make your {reel_label} reel!\n\n"
                                             f"{'Upload a product photo to get started 📸' if reel_type != 'ugc' else 'Tell me about the product or service you want to feature:'}"}
 
+        # ── Schedule (check before publish so "schedule" wins over "now") ──
+        if _wants_schedule:
+            session.step = STEP_DAILY_SUGGESTION_PUBLISH
+            save_session(session)
+            return {"kind": "text", "text": "⏰ When should I post this?\n"
+                                            "_(e.g. \"tomorrow at 9am\", \"Friday 6pm\")_"}
+
         # ── Post Now ──
-        if any(w in choice for w in ("post now", "post it", "publish", "yes", "approve", "post", "✅", "go", "ok", "okay", "sure")):
+        if _wants_publish:
             image_urls = suggestion.get("image_urls", [])
             caption = suggestion.get("caption", "")
             if not image_urls:
@@ -3146,13 +3160,6 @@ def handle_incoming_message(
             _sched._mark_calendar_day(phone, "approved")
             _start_bg(_publish_bg, phone)
             return {"kind": "text", "text": "📤 " + beeq("publishing")}
-
-        # ── Schedule ──
-        if any(w in choice for w in ("schedule", "later", "time", "⏰")):
-            session.step = STEP_DAILY_SUGGESTION_PUBLISH
-            save_session(session)
-            return {"kind": "text", "text": "⏰ When should I post this?\n"
-                                            "_(e.g. \"tomorrow at 9am\", \"Friday 6pm\")_"}
 
         # Unrecognised — re-prompt
         return {"kind": "text", "text": "Reply *post now*, *schedule*, or *skip* 🐝"}
