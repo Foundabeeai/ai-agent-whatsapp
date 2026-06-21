@@ -83,29 +83,37 @@ def handle_step(
 
     # ── Choose presenter ───────────────────────────────────────────────────
     if sub_step == "awaiting_presenter":
-        presenter_url = None
         has_image = bool(media_urls and any(t.startswith("image/") for t in media_types))
         if has_image:
+            # Own photo → upload, then ask about the outfit before generating
             user_id = session.verified_user_id or phone
+            presenter_url = None
             for url, mt in zip(media_urls, media_types):
                 if mt.startswith("image/"):
                     up = aws_storage.upload_from_url(url, user_id=user_id, media_kind="presenter")
                     if up.get("ok"):
                         presenter_url = up["s3_url"]
                     break
-        elif "maya" in low or low in ("1", "1️⃣") or "female" in low:
+            if not presenter_url:
+                return {"kind": "text", "text": "😕 Couldn't read that photo — please send it again."}
+            intent["_presenter_url"] = presenter_url
+            intent["_sub_step"] = "awaiting_outfit"
+            session.agent_intent = intent
+            save_session(session)
+            return {"kind": "text",
+                    "text": "📸 Got your photo!\n\n👔 *What outfit should you wear in the video?*\n"
+                            "e.g. _\"a navy business suit\"_, _\"a casual white shirt\"_, "
+                            "_\"a black blazer\"_…\n\nOr reply *same* to keep the outfit in your photo."}
+
+        # Avatar choice
+        presenter_url = None
+        if "maya" in low or low in ("1", "1️⃣") or "female" in low:
             presenter_url = config.AVATAR_MAYA_URL
         elif "george" in low or low in ("2", "2️⃣") or "male" in low:
             presenter_url = config.AVATAR_GEORGE_URL
-
-        # Capture an optional clothes-change instruction from free text
-        if msg and not has_image and low not in ("1", "2", "maya", "george"):
-            intent["_clothes_prompt"] = msg
-
         if not presenter_url:
             return {"kind": "text",
                     "text": "Reply *1* (Maya), *2* (George), or send your own photo to present. 🎥"}
-
         intent["_presenter_url"] = presenter_url
         intent["_sub_step"] = "awaiting_link"
         session.agent_intent = intent
@@ -114,6 +122,21 @@ def handle_step(
                 "text": "👍 Presenter set!\n\n*Step 2 — send the product/property link* 🔗\n"
                         "(e.g. your Zillow listing or store page). I'll pull the details and photos, "
                         "then build the whole video automatically."}
+
+    # ── Outfit choice (own-photo path) ─────────────────────────────────────
+    if sub_step == "awaiting_outfit":
+        if msg and low not in ("same", "keep", "keep same", "no", "none", "as is", "as-is", "skip"):
+            intent["_clothes_prompt"] = msg
+        else:
+            intent["_clothes_prompt"] = ""   # keep their real outfit
+        intent["_sub_step"] = "awaiting_link"
+        session.agent_intent = intent
+        save_session(session)
+        outfit_note = (f"👔 Outfit: _{intent['_clothes_prompt']}_\n\n"
+                       if intent.get("_clothes_prompt") else "👔 Keeping your original outfit.\n\n")
+        return {"kind": "text",
+                "text": outfit_note + "*Step 2 — send the product/property link* 🔗\n"
+                        "(Zillow listing, store page, etc.) — I'll pull the details and photos."}
 
     # ── Collect the link, then build Stage-1 assets ────────────────────────
     if sub_step == "awaiting_link":

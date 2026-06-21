@@ -358,9 +358,12 @@ def generate_greenscreen_portrait(
         "stretch, squash or distort them, and do not change who they are. "
         "The clothing must be PLAIN with absolutely NO text, letters, words, numbers, URLs, "
         "links, logos, writing, slogans, graphics or watermarks anywhere on it or in the image. "
-        "Place them against a perfectly uniform solid chroma-key GREEN screen background "
-        "(#00b140 green), evenly lit, no shadows on the background, clean edges around hair "
-        "and shoulders for easy background removal. Professional, sharp, well-lit, photorealistic."
+        "BACKGROUND REQUIREMENT (critical for chroma-key): a perfectly FLAT, UNIFORM, single "
+        "solid chroma-key green (#00b140) filling the entire background — completely even tone "
+        "with NO lighting gradient, NO shadows, NO highlights, NO vignette, NO texture, no "
+        "darker or lighter areas anywhere. The green must be one identical matte color edge to "
+        "edge so it can be removed cleanly. Light the PERSON well but keep ALL light off the "
+        "background. Crisp, clean edges around hair and shoulders. Photorealistic, sharp."
     )
     gen = generate_image_with_reference(prompt, person_image_url, aspect_ratio="2:3")
     if not gen.get("ok") or not gen.get("url"):

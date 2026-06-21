@@ -831,9 +831,11 @@ def compose_presentation_video(
         slideshow = slideshow.resize((W, H))
 
         # ── Foreground talking person, green removed — HALF size, bottom-left ──
+        # Higher thr removes more green (incl. fringe/shaded green); larger s softens
+        # the matte edge so it doesn't look cut-out.
         margin = 40
         person = (talk
-                  .fx(mask_color, color=list(_CHROMA_GREEN), thr=120, s=12)
+                  .fx(mask_color, color=list(_CHROMA_GREEN), thr=160, s=20)
                   .resize((W, H))     # normalise to full 9:16 first
                   .resize(0.5)        # then halve → 540x960
                   .set_position((margin, H - (H // 2) - margin))  # bottom-left
