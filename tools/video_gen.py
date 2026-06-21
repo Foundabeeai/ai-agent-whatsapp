@@ -782,11 +782,13 @@ def compose_presentation_video(
             slideshow = ColorClip(size=(W, H), color=(15, 15, 15)).set_duration(D)
         slideshow = slideshow.resize((W, H))
 
-        # ── Foreground talking person, green removed ───────────────────────
+        # ── Foreground talking person, green removed — HALF size, bottom-left ──
+        margin = 40
         person = (talk
                   .fx(mask_color, color=list(_CHROMA_GREEN), thr=120, s=12)
-                  .resize((W, H))
-                  .set_position("center")
+                  .resize((W, H))     # normalise to full 9:16 first
+                  .resize(0.5)        # then halve → 540x960
+                  .set_position((margin, H - (H // 2) - margin))  # bottom-left
                   .set_duration(D))
 
         final = CompositeVideoClip([slideshow, person], size=(W, H)).set_duration(D)

@@ -201,9 +201,9 @@ def _build_full_video(phone: str, session: UserSession, intent: dict) -> None:
         if not comp.get("ok") or not comp.get("bytes"):
             raise RuntimeError(f"composition failed: {comp.get('error')}")
 
-        # Stage 5 — burned-in captions
+        # Stage 5 — burned-in captions (tiktok-short-captions, brand highlight)
         _send(phone, {"kind": "text", "text": "💬 Step 3/3 — adding captions..."})
-        final_bytes = video_gen.add_autocaption(comp["bytes"]) or comp["bytes"]
+        final_bytes = video_gen.add_tiktok_captions(comp["bytes"], highlight_color="#FCD738") or comp["bytes"]
 
         # Upload final video
         up = aws_storage.upload_bytes(final_bytes, content_type="video/mp4",
