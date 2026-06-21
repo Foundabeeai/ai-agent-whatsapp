@@ -93,6 +93,10 @@ LASTFM_FALLBACK_AUDIO_URL = _get("LASTFM_FALLBACK_AUDIO_URL",
 AVATAR_MAYA_URL   = _get("AVATAR_MAYA_URL",   "").split("?")[0]
 AVATAR_GEORGE_URL = _get("AVATAR_GEORGE_URL", "").split("?")[0]
 
+# Max number of LOCAL (moviepy/ffmpeg) video composites that may run at once.
+# Each one is RAM+CPU heavy; on a t3.medium keep this at 1-2 to avoid OOM/throttle.
+VIDEO_BUILD_CONCURRENCY = _get_int("VIDEO_BUILD_CONCURRENCY", 2)
+
 # Groq vision model for product image analysis
 GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 

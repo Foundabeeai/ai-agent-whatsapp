@@ -14,10 +14,34 @@ import logging
 import os
 import time
 
+import threading
+from contextlib import contextmanager
+
 import requests
 import replicate as _replicate
 
 import config
+
+# ── Concurrency cap for LOCAL video compositing (moviepy/ffmpeg) ─────────────
+# Each local composite uses ~1 GB RAM + a full core for minutes. Cap how many
+# run simultaneously so a burst of reel requests can't OOM/throttle the box.
+_VIDEO_SEMA = threading.BoundedSemaphore(max(1, getattr(config, "VIDEO_BUILD_CONCURRENCY", 2)))
+
+
+@contextmanager
+def _video_slot(label: str = "video"):
+    """Block until a local-compositing slot is free, then hold it for the build."""
+    waited = _VIDEO_SEMA.acquire(blocking=False)
+    if not waited:
+        logger.info("video_gen: %s waiting for a free compositing slot (cap=%s)...",
+                    label, config.VIDEO_BUILD_CONCURRENCY)
+        _VIDEO_SEMA.acquire()   # block until one frees up
+    logger.info("video_gen: %s acquired compositing slot", label)
+    try:
+        yield
+    finally:
+        _VIDEO_SEMA.release()
+        logger.info("video_gen: %s released compositing slot", label)
 
 # Pillow 10+ removed Image.ANTIALIAS (and other constants) that moviepy still calls.
 # Shim them to the modern Resampling enums so moviepy resize works.
@@ -374,6 +398,7 @@ def composite_ad_video(
     Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
     """
     try:
+      with _video_slot("ad_reel"):
         import tempfile, os as _os, shutil
         from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 
@@ -773,6 +798,7 @@ def compose_presentation_video(
     Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
     """
     try:
+      with _video_slot("presentation"):
         import tempfile, os as _os, shutil
         from moviepy.editor import (VideoFileClip, ImageClip,
                                     concatenate_videoclips, CompositeVideoClip)
