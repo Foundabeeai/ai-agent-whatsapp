@@ -674,7 +674,7 @@ def add_tiktok_captions(
         output = _replicate.run(
             run_ref,
             input={
-                "video_file":       video_url,
+                "video":            video_url,   # this model's field is "video"
                 "highlight_color":  highlight_color,
             },
         )
