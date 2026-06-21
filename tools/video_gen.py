@@ -668,17 +668,9 @@ def add_tiktok_captions(
             return None
         video_url = tmp_upload["s3_url"]
 
-        # Community model → must be run with a version hash, not just owner/name
-        # (owner/name alone returns 404). Resolve the latest version at runtime.
-        model_ref = "shreejalmaharjan-27/tiktok-short-captions"
-        try:
-            _model = _replicate.models.get(model_ref)
-            _ver = _model.latest_version.id
-            run_ref = f"{model_ref}:{_ver}"
-        except Exception as exc:
-            logger.error("video_gen.captions: could not resolve model version: %s", exc)
-            return None
-
+        # Community model → must be run with a pinned version hash (owner/name alone 404s).
+        run_ref = ("shreejalmaharjan-27/tiktok-short-captions:"
+                   "46bf1c12c77ad1782d6f87828d4d8ba4d48646b8e1271b490cb9e95ccdbc4504")
         output = _replicate.run(
             run_ref,
             input={
