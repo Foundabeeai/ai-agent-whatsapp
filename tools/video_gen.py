@@ -675,11 +675,13 @@ def add_tiktok_captions(
                 "highlight_color":  highlight_color,
             },
         )
+        logger.info("video_gen.captions: output type=%s value=%r",
+                    type(output).__name__, str(output)[:200])
 
-        # Resolve output URL
+        # Resolve output URL (handles str / list / dict / FileOutput)
         url = _resolve_url(output)
         if not url:
-            logger.error("video_gen.captions: unexpected output=%r", output)
+            logger.error("video_gen.captions: could not resolve url from output=%r", output)
             return None
 
         captioned_bytes = _fetch(url, timeout=180)
@@ -687,24 +689,37 @@ def add_tiktok_captions(
         return captioned_bytes
 
     except Exception as exc:
-        logger.error("video_gen.captions failed: %s", exc)
+        logger.error("video_gen.captions failed: %s", exc, exc_info=True)
         return None
 
 
 def _resolve_url(output) -> str | None:
-    """Extract a URL string from various Replicate output shapes."""
+    """Extract a URL string from various Replicate output shapes (incl. FileOutput)."""
+    if output is None:
+        return None
     if isinstance(output, str) and output.startswith("http"):
         return output
-    if hasattr(output, "url"):
-        return output.url
-    if hasattr(output, "read"):
-        return None  # raw bytes — caller should handle
     if isinstance(output, list) and output:
         return _resolve_url(output[0])
     if isinstance(output, dict):
-        for k in ("url", "output", "video", "audio"):
+        for k in ("url", "output", "video", "audio", "output_video"):
             if k in output:
-                return output[k]
+                return _resolve_url(output[k])
+    # Replicate FileOutput: .url may be a property OR a method; str() also yields the URL
+    u = getattr(output, "url", None)
+    if callable(u):
+        try:
+            u = u()
+        except Exception:
+            u = None
+    if isinstance(u, str) and u.startswith("http"):
+        return u
+    try:
+        s = str(output)
+        if s.startswith("http"):
+            return s
+    except Exception:
+        pass
     return None
 
 
