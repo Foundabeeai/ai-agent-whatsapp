@@ -3185,9 +3185,13 @@ def handle_incoming_message(
 
         # ── Reel: make it ──
         if content_type == "reel" and (_wants_publish or bool(tokens & {"make", "start", "create"})):
-            # Pre-fill reel type and route to reel flow
+            # Pre-fill reel type + the notes-enriched description from the calendar
             session.reel_type = reel_type or "cinematic"
             session.content_type = "reel"
+            _reel_desc = suggestion.get("description", "")
+            if _reel_desc:
+                session.description = _reel_desc
+                session.reel_product_description = _reel_desc
             if reel_type in ("ugc", "ad"):
                 session.step = STEP_REEL_UGC_DESCRIBE if reel_type == "ugc" else STEP_REEL_AD_PRODUCT_IMAGE
             else:

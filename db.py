@@ -491,6 +491,32 @@ def get_content_calendar(phone_number: str) -> dict | None:
         return None
 
 
+def get_backend_calendar_day(phone_number: str, date_str: str) -> dict | None:
+    """
+    Read a single day from the BACKEND beeq_calendars collection — this is where the
+    web calendar saves user-entered notes / edits. Tries a few phone formats since the
+    web and bot may store the number differently.
+    Returns the day dict (with notes/topic/status) or None.
+    """
+    try:
+        fdb = _get_foundabee_db()
+        bare = phone_number.replace("whatsapp:", "").strip()
+        candidates = {phone_number, bare, f"whatsapp:{bare}"}
+        cal = None
+        for pn in candidates:
+            cal = fdb["beeq_calendars"].find_one({"phone_number": pn})
+            if cal:
+                break
+        if not cal:
+            return None
+        for day in cal.get("days", []):
+            if day.get("date") == date_str:
+                return day
+        return None
+    except Exception:
+        return None
+
+
 def save_post_style_skill(phone_number: str, skill: dict, summary: str = "",
                           compositor: dict | None = None) -> None:
     """Persist a user's post style skill (derived from their reference image)."""

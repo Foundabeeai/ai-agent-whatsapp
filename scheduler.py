@@ -487,10 +487,14 @@ def _send_carousel_suggestion(phone, session, brand, brand_name, wf, date_str: s
     save_session(session)
 
     wf._send_async(phone, {"kind": "text",
-                           "text": f"🌅 *Good morning, {brand_name}!*\n\nHere's your carousel for today 👇"})
+                           "text": f"🌅 *Good morning, {brand_name}!*\n\nHere's your carousel for today "
+                                   f"({len(s3_urls)} slides) 👇"})
     time.sleep(1)
-    wf._send_async(phone, {"kind": "media", "text": f"_{caption}_", "media_url": s3_url})
-    time.sleep(0.8)
+    # Send EVERY slide, not just the cover
+    for i, url in enumerate(s3_urls, 1):
+        label = f"_{caption}_" if i == 1 else f"Slide {i}/{len(s3_urls)}"
+        wf._send_async(phone, {"kind": "media", "text": label, "media_url": url})
+        time.sleep(1.0)
     wf._send_async(phone, {"kind": "text",
                            "text": "Reply:\n✅ *post now* — publish immediately\n"
                                    "⏰ *schedule* — pick a time\n"
@@ -510,6 +514,10 @@ def _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf, date
     notes_line = f"\n📝 *Notes:* _{notes}_" if notes else ""
     topic_line = topic_line + notes_line
 
+    # Enriched description (topic + user notes) so the reel generation honours them
+    base_desc = topic or f"reel for {brand.get('brand_name', 'our brand')}"
+    reel_description = _build_description_with_notes(phone, date_str, base_desc)
+
     session = get_session(phone)
     session.daily_suggestion = {
         "content_type": "reel",
@@ -517,6 +525,7 @@ def _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf, date
         "caption": "",
         "reel_type": reel_type,
         "post_id": None,
+        "description": reel_description,
     }
     session.step = STEP_DAILY_SUGGESTION
     save_session(session)
@@ -547,14 +556,31 @@ def _get_calendar_topic(phone: str) -> str | None:
 
 
 def _get_calendar_day_data(phone: str, date_str: str) -> dict | None:
-    """Return the full day dict for a specific date from the calendar."""
+    """
+    Return the full day dict for a specific date. Merges the bot's own calendar
+    with the BACKEND beeq_calendars (where the WEB calendar saves user notes/edits),
+    so notes a user types on the web are honoured when content is prepared.
+    """
+    day = None
     cal = db.get_content_calendar(phone)
-    if not cal:
-        return None
-    for day in cal.get("days", []):
-        if day.get("date") == date_str:
-            return day
-    return None
+    if cal:
+        for d in cal.get("days", []):
+            if d.get("date") == date_str:
+                day = dict(d)
+                break
+
+    # Overlay web-entered fields (notes/topic/caption) from the backend calendar
+    try:
+        backend_day = db.get_backend_calendar_day(phone, date_str)
+    except Exception:
+        backend_day = None
+    if backend_day:
+        day = dict(day or {})
+        for key in ("notes", "topic", "caption_idea", "content_type", "reel_type"):
+            val = backend_day.get(key)
+            if val:                      # web value wins when present
+                day[key] = val
+    return day
 
 
 def _enrich_description_from_calendar(phone: str, default: str) -> str:
