@@ -671,13 +671,17 @@ def add_tiktok_captions(
         # Community model → must be run with a pinned version hash (owner/name alone 404s).
         run_ref = ("shreejalmaharjan-27/tiktok-short-captions:"
                    "46bf1c12c77ad1782d6f87828d4d8ba4d48646b8e1271b490cb9e95ccdbc4504")
-        output = _replicate.run(
-            run_ref,
-            input={
-                "video":            video_url,   # this model's field is "video"
-                "highlight_color":  highlight_color,
-            },
-        )
+        base_input = {
+            "video":            video_url,   # this model's field is "video"
+            "highlight_color":  highlight_color,
+        }
+        # Bigger captions. font_size may not be a valid field on every version, so if
+        # the model rejects it we retry with just the known-good inputs.
+        try:
+            output = _replicate.run(run_ref, input={**base_input, "font_size": 90})
+        except Exception as exc:
+            logger.warning("video_gen.captions: font_size rejected (%s) — retrying without it", exc)
+            output = _replicate.run(run_ref, input=base_input)
         logger.info("video_gen.captions: ran %s → output type=%s value=%r",
                     run_ref[:80], type(output).__name__, str(output)[:200])
 
