@@ -196,9 +196,22 @@ def _scheduler_loop() -> None:
 
 
 def _tick() -> None:
-    from db import _session_cache
     now_utc = datetime.now(timezone.utc)
-    for phone, session_dict in list(_session_cache.items()):
+    # Iterate ALL onboarded users from the DB — NOT just the in-memory cache, which is
+    # empty after a restart and only repopulates when a user messages. Pulling from the
+    # DB guarantees every onboarded user gets their morning check regardless of cache/
+    # restart state (and regardless of whether they acted on yesterday's suggestion).
+    try:
+        cursor = db.get_db().sessions.find({"onboarding_complete": True})
+        sessions = list(cursor)
+    except Exception as exc:
+        _logger.error("scheduler: failed to load sessions from DB: %s", exc)
+        sessions = []
+
+    for session_dict in sessions:
+        phone = session_dict.get("phone_number")
+        if not phone:
+            continue
         try:
             _maybe_send_suggestion(phone, session_dict, now_utc)
         except Exception as exc:
