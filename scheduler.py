@@ -448,19 +448,50 @@ def _send_post_suggestion(phone, session, brand, brand_name, wf, date_str: str |
 
 
 def _send_carousel_suggestion(phone, session, brand, brand_name, wf, date_str: str | None = None) -> None:
-    from tools import groq_ai, aws_storage
+    from tools import groq_ai, aws_storage, image_gen
     from tools.carousel_composer import make_research_carousel
+    import requests as _req
 
     base_topic = f"{brand.get('social_goal', 'industry insights')} for {brand.get('brand_name', 'our brand')}"
     topic = _build_description_with_notes(phone, date_str, base_topic)
-    slides_data = groq_ai.generate_research_carousel_content(topic, brand, slide_count=4)
+    slide_count = 4
+    slides_data = groq_ai.generate_research_carousel_content(topic, brand, slide_count=slide_count)
     brand_colors_hex = groq_ai.get_brand_hex_colors(brand.get("brand_colors", ""))
+
+    # No uploaded product/service photo for daily carousels → generate background
+    # imagery with Replicate so slides aren't plain colour blocks.
+    total_slides = 1 + slide_count
+    n_bg = max(1, total_slides // 2)
+    ref = [session.brand_assets[0]] if session.brand_assets else None
+    hook_bytes = None
+    extra_bg = []
+    for bi in range(n_bg):
+        bg_prompt = (
+            f"Cinematic editorial photo for {brand.get('brand_name', 'the brand')}: {topic}. "
+            f"Brand colors: {brand.get('brand_colors') or 'professional tones'}. "
+            "No text, no logos, dramatic commercial lighting, magazine quality."
+        )
+        try:
+            gen = image_gen.generate_image(bg_prompt, aspect_ratio="1:1", reference_urls=ref)
+            if gen.get("ok") and gen.get("url"):
+                r = _req.get(gen["url"], timeout=30)
+                if r.ok:
+                    if bi == 0:
+                        hook_bytes = r.content
+                    else:
+                        extra_bg.append(r.content)
+        except Exception as exc:
+            _logger.warning("daily carousel bg gen failed: %s", exc)
+
     slides_list = make_research_carousel(
         slides_data,
         username=brand.get("brand_name", ""),
         brand_name=brand.get("brand_name", ""),
         avatar_url=session.brand_logo_url,
         brand_colors=brand_colors_hex,
+        hook_image_bytes=hook_bytes,
+        extra_bg_bytes=extra_bg,
+        style_compositor=db.get_post_style_compositor(phone),
     )
     # Upload all slides to S3 and use the cover as preview
     s3_urls = []
