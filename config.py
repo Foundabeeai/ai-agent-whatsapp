@@ -115,6 +115,18 @@ REPLICATE_GLOBAL_CONCURRENCY = _get_int("REPLICATE_GLOBAL_CONCURRENCY", 6)
 # anyway) so a stuck queue never hangs the bot forever.
 REPLICATE_QUEUE_WAIT = _get_int("REPLICATE_QUEUE_WAIT", 900)
 
+# ── LangSmith tracing + LangChain ────────────────────────────────────────────
+# Full operation tracing to LangSmith. Set LANGSMITH_API_KEY (and optionally
+# LANGSMITH_PROJECT) to enable. If unset or the libs aren't installed, everything
+# runs exactly as before with tracing simply disabled.
+LANGSMITH_API_KEY = _get("LANGSMITH_API_KEY") or _get("LANGCHAIN_API_KEY")
+LANGSMITH_PROJECT = _get("LANGSMITH_PROJECT", "beeq-whatsapp")
+LANGSMITH_TRACING = bool(LANGSMITH_API_KEY) and \
+    _get("LANGSMITH_TRACING", "true").lower() in ("1", "true", "yes", "on")
+# Route text LLM calls through LangChain's ChatGroq (so they appear as native LLM
+# spans). Falls back to the raw Groq SDK automatically on any error. Opt-in.
+USE_LANGCHAIN = _get("USE_LANGCHAIN", "").lower() in ("1", "true", "yes", "on")
+
 # Groq vision model for product image analysis
 GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 

@@ -14,6 +14,8 @@ Voice flow:
 
 from __future__ import annotations
 
+from tools.tracing import traceable
+
 import logging
 import threading
 from typing import Optional
@@ -78,6 +80,7 @@ def _session_context(session: UserSession) -> dict:
     }
 
 
+@traceable(run_type="chain", name="route")
 def route(
     phone: str,
     session: UserSession,

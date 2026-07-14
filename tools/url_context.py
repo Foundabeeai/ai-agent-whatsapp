@@ -19,6 +19,8 @@ Returns:
 
 from __future__ import annotations
 
+from tools.tracing import traceable
+
 import logging
 import re
 import urllib.parse
@@ -266,6 +268,7 @@ def _scrape_direct_image(url: str, phone: str) -> dict | None:
     }
 
 
+@traceable(run_type="tool", name="scrape_url")
 def scrape_url(url: str, phone: str) -> dict:
     """
     Full pipeline: fetch page → extract text + images → upload images to S3

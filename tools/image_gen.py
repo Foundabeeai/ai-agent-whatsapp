@@ -12,6 +12,7 @@ import requests as _requests
 from replicate.exceptions import ReplicateError
 
 import config
+from tools.tracing import traceable
 from tools.replicate_queue import gated as _gated
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ def _make_realistic(prompt: str) -> str:
     return prompt.rstrip(" ,") + _REALISM_SUFFIX
 
 
+@traceable(run_type="tool", name="generate_image")
 @_gated("image")
 def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[str] | None = None) -> dict:
     """
@@ -226,6 +228,7 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
 
 _SEEDREAM_MODEL = "bytedance/seedream-4.5"
 
+@traceable(run_type="tool", name="generate_image_with_reference")
 @_gated("image_ref")
 def generate_image_with_reference(
     prompt: str,
@@ -337,6 +340,7 @@ def _pad_to_9x16_green(img_bytes: bytes, canvas=(1080, 1920)) -> bytes:
     return out.getvalue()
 
 
+@traceable(run_type="tool", name="generate_greenscreen_portrait")
 def generate_greenscreen_portrait(
     person_image_url: str,
     clothes_prompt: str = "",
@@ -413,6 +417,7 @@ def generate_images(
 # SeedDream product post generation (strict product preservation)
 # ---------------------------------------------------------------------------
 
+@traceable(run_type="tool", name="generate_product_post")
 @_gated("product")
 def generate_product_post(
     prompt: str,

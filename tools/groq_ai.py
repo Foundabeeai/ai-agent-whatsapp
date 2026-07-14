@@ -2,20 +2,53 @@
 
 from __future__ import annotations
 
+import logging
+
 from groq import Groq
 
 import config
+from tools.tracing import traceable
+
+_logger = logging.getLogger(__name__)
 
 
 def _client() -> Groq:
     return Groq(api_key=config.GROQ_API_KEY)
 
 
+def _chat_langchain(system: str, user: str, temperature: float, effective_max: int) -> str:
+    """Run the text LLM call through LangChain's ChatGroq (native LangSmith LLM span)."""
+    from langchain_groq import ChatGroq
+    from langchain_core.messages import SystemMessage, HumanMessage
+    llm = ChatGroq(
+        model=config.GROQ_MODEL,
+        api_key=config.GROQ_API_KEY,
+        temperature=temperature,
+        model_kwargs={
+            "max_completion_tokens": effective_max,
+            "top_p": 1,
+            "reasoning_effort": "medium",
+        },
+    )
+    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    return (resp.content or "").strip()
+
+
+@traceable(run_type="llm", name="groq_chat")
 def _chat(system: str, user: str, temperature: float = 1.0, max_tokens: int = 8192) -> str:
     # reasoning_effort="medium" spends part of max_completion_tokens on hidden reasoning.
     # If a caller passes a small budget (e.g. 80-400), the reasoning can consume it all and
     # the visible answer comes back EMPTY. Always leave generous headroom for the output.
     effective_max = max(max_tokens, 1500)
+
+    # Optional LangChain path (opt-in) — falls back to the raw Groq SDK on any error so
+    # behaviour never changes if LangChain misbehaves.
+    if config.USE_LANGCHAIN:
+        try:
+            return _chat_langchain(system, user, temperature, effective_max)
+        except Exception as exc:
+            _logger.warning("_chat: LangChain path failed, falling back to Groq SDK: %s", exc)
+
     resp = _client().chat.completions.create(
         model=config.GROQ_MODEL,
         messages=[
@@ -187,6 +220,7 @@ def generate_caption(description: str, content_type: str, website_url: str = "")
     return _chat(system, user, temperature=0.75)
 
 
+@traceable(run_type="chain", name="art_director_analyze")
 def art_director_analyze(image_url: str, description: str, brand: dict,
                          preserve_subject: bool = False) -> dict:
     """
@@ -663,6 +697,7 @@ def get_timezone_for_location(location: str) -> str | None:
     return raw
 
 
+@traceable(run_type="chain", name="extract_full_intent")
 def extract_full_intent(
     text_body: str,
     audio_transcript: str | None,
@@ -844,6 +879,7 @@ def extract_full_intent(
         }
 
 
+@traceable(run_type="chain", name="classify_message_routing")
 def classify_message_routing(
     user_message: str,
     step_purpose: str,
@@ -1000,6 +1036,7 @@ Return ONLY valid JSON. Example:
     return {}
 
 
+@traceable(run_type="chain", name="analyze_post_style")
 def analyze_post_style(image_url: str) -> dict:
     """
     Two-step style fingerprinting pipeline.
@@ -1438,6 +1475,7 @@ def analyze_product_image(image_url: str) -> str:
         return "a product photographed against a plain background"
 
 
+@traceable(run_type="llm", name="detect_gender_from_image")
 def detect_gender_from_image(image_url: str) -> str:
     """
     Use Groq vision to detect the apparent gender of the main person in an image,
@@ -1483,6 +1521,7 @@ def detect_gender_from_image(image_url: str) -> str:
         return "male"
 
 
+@traceable(run_type="chain", name="generate_presentation_script")
 def generate_presentation_script(context: str, brand: dict, target_seconds: int = 20) -> str:
     """
     Write a spoken presentation script for a UGC presentation reel, based on scraped
@@ -1736,6 +1775,7 @@ def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
 # Sub-agent action classifier — replaces keyword matching in step handlers
 # ---------------------------------------------------------------------------
 
+@traceable(run_type="chain", name="classify_action")
 def classify_action(
     user_message: str,
     step: str,

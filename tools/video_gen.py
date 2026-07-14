@@ -21,6 +21,7 @@ import requests
 import replicate as _replicate
 
 import config
+from tools.tracing import traceable
 from tools.replicate_queue import gated as _gated
 
 # ── Concurrency cap for LOCAL video compositing (moviepy/ffmpeg) ─────────────
@@ -142,6 +143,7 @@ def generate_video_from_image(
 # Talking-head lip-sync  (veed/fabric-1.0)
 # ---------------------------------------------------------------------------
 
+@traceable(run_type="tool", name="generate_lipsync_video")
 @_gated("lipsync")
 def generate_lipsync_video(
     image_url: str,
@@ -664,6 +666,7 @@ def add_text_overlays(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+@traceable(run_type="tool", name="add_tiktok_captions")
 @_gated("captions")
 def add_tiktok_captions(
     video_bytes: bytes,
@@ -787,6 +790,7 @@ def _cover_9x16(img_bytes: bytes, size=(1080, 1920)):
     return _np.array(im)
 
 
+@traceable(run_type="tool", name="compose_presentation_video")
 def compose_presentation_video(
     lipsync_bytes: bytes,
     photo_urls: list[str],

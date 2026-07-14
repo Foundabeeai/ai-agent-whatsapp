@@ -16,6 +16,10 @@ load_dotenv()
 from workflow import handle_incoming_message
 import db
 import scheduler
+from tools.tracing import init_tracing
+
+# Wire LangSmith tracing (no-op if disabled / not configured)
+init_tracing()
 
 app = Flask(__name__)
 
