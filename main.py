@@ -29,14 +29,21 @@ logger = logging.getLogger(__name__)
 
 # ── Twilio duplicate-webhook deduplication ─────────────────────────────────
 # Twilio retries the webhook if it doesn't get a 2xx within ~15 s.
-# We track the last N MessageSids per phone so a retry never double-processes.
+# Single instance → in-memory. Multi-instance (SHARED_STATE) → MongoDB, so a retry
+# that lands on a DIFFERENT instance is still caught fleet-wide (otherwise the same
+# message gets processed on several instances and the conversation state thrashes).
 import collections, time as _time
+import config as _config
 _seen_sids: dict[str, tuple[str, float]] = {}   # phone → (last_sid, timestamp)
-_DEDUP_WINDOW = 30.0   # seconds — ignore duplicate SID within this window
+_DEDUP_WINDOW = 60.0   # seconds — ignore duplicate SID within this window
 
 def _is_duplicate(phone: str, sid: str) -> bool:
     if not sid:
         return False
+    if getattr(_config, "SHARED_STATE", False):
+        # Distributed dedup — atomic claim in Mongo across all instances
+        return db.claim_message_sid(sid, ttl=_DEDUP_WINDOW)
+    # Single-instance in-memory path
     entry = _seen_sids.get(phone)
     if entry and entry[0] == sid and (_time.time() - entry[1]) < _DEDUP_WINDOW:
         return True

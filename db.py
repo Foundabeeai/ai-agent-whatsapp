@@ -631,6 +631,26 @@ def acquire_scheduler_leadership(instance_id: str, ttl: int = 120) -> bool:
         return True
 
 
+def claim_message_sid(sid: str, ttl: float = 60.0) -> bool:
+    """
+    Fleet-wide dedup for Twilio webhook retries. Atomically claims a message SID.
+    Returns True if this SID was ALREADY seen (a duplicate/retry → skip processing),
+    False if it's the first time (newly claimed → process it). A crashed claim
+    self-cleans via the TTL index.
+    """
+    from datetime import timedelta
+    from pymongo.errors import DuplicateKeyError
+    if not sid:
+        return False
+    try:
+        get_db().locks.insert_one({"_id": f"sid:{sid}", "expireAt": _now_utc() + timedelta(seconds=ttl)})
+        return False   # first time → not a duplicate
+    except DuplicateKeyError:
+        return True    # already processed by some instance → duplicate
+    except Exception:
+        return False   # DB trouble → don't drop the message
+
+
 def claim_daily_suggestion(phone_number: str, date_str: str) -> bool:
     """
     Atomically claim today's daily suggestion for a phone number.
