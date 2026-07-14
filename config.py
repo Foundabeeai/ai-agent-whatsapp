@@ -97,6 +97,11 @@ AVATAR_GEORGE_URL = _get("AVATAR_GEORGE_URL", "").split("?")[0]
 # Each one is RAM+CPU heavy; on a t3.medium keep this at 1-2 to avoid OOM/throttle.
 VIDEO_BUILD_CONCURRENCY = _get_int("VIDEO_BUILD_CONCURRENCY", 2)
 
+# Set SHARED_STATE=true when running MORE THAN ONE instance behind a load balancer.
+# It makes MongoDB the single source of truth for sessions (skips the per-process
+# in-memory cache, which would otherwise go stale across instances).
+SHARED_STATE = _get("SHARED_STATE", "").lower() in ("1", "true", "yes", "on")
+
 # Groq vision model for product image analysis
 GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 

@@ -238,7 +238,12 @@ def _maybe_send_suggestion(phone: str, session_dict: dict, now_utc: datetime) ->
         return
 
     today_str = local_now.strftime("%Y-%m-%d")
+    # Fast pre-check to skip work most of the time…
     if session_dict.get("last_daily_suggestion_date") == today_str:
+        return
+    # …but the AUTHORITATIVE gate is an atomic claim, so with the scheduler running
+    # on multiple instances exactly ONE wins and sends (no duplicate daily posts).
+    if not db.claim_daily_suggestion(phone, today_str):
         return
 
     # ── Dismiss any stale pending suggestion from a previous day ──

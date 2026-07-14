@@ -222,22 +222,25 @@ def get_session(phone_number: str) -> UserSession:
     Always returns a valid UserSession — never raises.
     """
     from db import _session_cache
+    import config
     key = (phone_number or "unknown").strip()
 
-    # 1. In-memory cache — fastest, always available
-    if key in _session_cache:
+    # 1. In-memory cache — fastest. Skipped in SHARED_STATE (multi-instance) mode so a
+    # stale cached copy on one instance can't override Mongo (the source of truth).
+    if not config.SHARED_STATE and key in _session_cache:
         try:
             return UserSession.from_dict(_session_cache[key])
         except Exception:
             pass
 
-    # 2. MongoDB — persistent across restarts
+    # 2. MongoDB — persistent across restarts, authoritative when SHARED_STATE
     try:
         db = get_db()
         doc = db.sessions.find_one({"phone_number": key})
         if doc:
             doc.pop("_id", None)
-            _session_cache[key] = doc  # warm the cache
+            if not config.SHARED_STATE:
+                _session_cache[key] = doc  # warm the cache (single-instance only)
             return UserSession.from_dict(doc)
     except Exception:
         pass

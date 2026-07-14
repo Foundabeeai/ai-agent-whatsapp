@@ -491,6 +491,23 @@ def get_content_calendar(phone_number: str) -> dict | None:
         return None
 
 
+def claim_daily_suggestion(phone_number: str, date_str: str) -> bool:
+    """
+    Atomically claim today's daily suggestion for a phone number.
+    Returns True only for the ONE caller that wins the claim (should send);
+    False if it was already claimed (by another instance or an earlier tick).
+    This lets the daily scheduler run on every instance without duplicate sends.
+    """
+    try:
+        res = get_db().sessions.update_one(
+            {"phone_number": phone_number, "last_daily_suggestion_date": {"$ne": date_str}},
+            {"$set": {"last_daily_suggestion_date": date_str}},
+        )
+        return res.modified_count == 1
+    except Exception:
+        return False
+
+
 def get_backend_calendar_day(phone_number: str, date_str: str) -> dict | None:
     """
     Read a single day from the BACKEND beeq_calendars collection — this is where the
