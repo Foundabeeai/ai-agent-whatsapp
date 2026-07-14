@@ -296,6 +296,24 @@ def handle_step(
         # ✏️ Visual edit → img2img on the CURRENT image, preserving the rest
         if action == "edit_image":
             instruction = value or msg
+            instr_low = instruction.lower()
+
+            # Profile-badge toggle is a compositor overlay, NOT an img2img edit — handle
+            # by re-stamping (badge is OFF by default; only added when the user asks).
+            if "badge" in instr_low or ("logo" in instr_low and any(
+                    w in instr_low for w in ("add", "remove", "put", "no ", "without", "hide"))):
+                wants = (any(w in instr_low for w in ("add", "put", "with", "include", "want", "show"))
+                         and not any(w in instr_low for w in ("remove", "no ", "without", "don't", "dont", "hide", "take off")))
+                intent["_add_badge"] = wants
+                intent["_sub_step"] = "editing"
+                session.agent_intent = intent
+                save_session(session)
+                threading.Thread(target=_restamp_badge_bg, args=(phone, session, intent), daemon=True).start()
+                _send(phone, {"kind": "text",
+                              "text": ("🏷 Adding your profile badge..." if wants
+                                       else "🧹 Removing the profile badge...")}, tts=voice_confirmed)
+                return {"kind": "none"}
+
             intent["_edit_history"] = (intent.get("_edit_history") or []) + [instruction]
             intent["_sub_step"] = "editing"
             session.agent_intent = intent
@@ -487,7 +505,7 @@ def _generate_with_image_bg(
             if is_square:
                 _send(phone, {"kind": "text",
                               "text": "🖼 Using your real photo — keeping it exactly as-is."})
-                s3_urls = _stamp_images([ref_url], session=session, user_id=user_id)
+                s3_urls = _stamp_images([ref_url], session=session, user_id=user_id, add_badge=intent.get("_add_badge", False))
             else:
                 _send(phone, {"kind": "text",
                               "text": "🎬 Reframing your photo into a clean 1:1 — same property, "
@@ -513,10 +531,10 @@ def _generate_with_image_bg(
                                                       extension="jpg", folder=f"{user_id}/posts")
                         if up.get("ok"):
                             s3_tmp.append(up["s3_url"])
-                    s3_urls = _stamp_images(s3_tmp or [ref_url], session=session, user_id=user_id)
+                    s3_urls = _stamp_images(s3_tmp or [ref_url], session=session, user_id=user_id, add_badge=intent.get("_add_badge", False))
                 else:
                     # SeedDream failed → fall back to the real photo (cropped to square)
-                    s3_urls = _stamp_images([ref_url], session=session, user_id=user_id)
+                    s3_urls = _stamp_images([ref_url], session=session, user_id=user_id, add_badge=intent.get("_add_badge", False))
 
             caption = groq_ai.generate_caption_with_style(
                 description + scraped_ctx, "image_post",
@@ -577,9 +595,10 @@ def _generate_with_image_bg(
             if up.get("ok"):
                 s3_urls.append(up["s3_url"])
 
-        # Stamp profile badge
+        # Keep the raw (un-badged) image, then optionally add the profile badge
+        intent["_raw_image_urls"] = list(s3_urls)
         s3_urls = _stamp_images(
-            s3_urls, session=session, user_id=user_id
+            s3_urls, session=session, user_id=user_id, add_badge=intent.get("_add_badge", False)
         )
 
         # Generate caption with style skill (include scraped property/product facts)
@@ -632,7 +651,8 @@ def _generate_no_image_bg(phone: str, session: UserSession, intent: dict) -> Non
         s3_result = aws_storage.upload_urls(gen["urls"], user_id, media_kind="post")
         s3_urls   = s3_result.get("s3_urls") or []
 
-        s3_urls = _stamp_images(s3_urls, session=session, user_id=user_id)
+        intent["_raw_image_urls"] = list(s3_urls)
+        s3_urls = _stamp_images(s3_urls, session=session, user_id=user_id, add_badge=intent.get("_add_badge", False))
 
         caption_desc = description + scraped_ctx
         caption = groq_ai.generate_caption_with_style(
@@ -789,6 +809,26 @@ def _finish_generation(
     save_session(session)
 
 
+def _restamp_badge_bg(phone: str, session: UserSession, intent: dict) -> None:
+    """Re-stamp the current image with/without the profile badge (no AI redraw).
+    Works from the raw (pre-badge) image so a badge can be added or removed cleanly."""
+    try:
+        user_id = session.verified_user_id or phone
+        base = intent.get("_raw_image_urls") or intent.get("_image_urls") or []
+        if not base:
+            raise RuntimeError("no image to update")
+        stamped = _stamp_images(list(base), session=session, user_id=user_id,
+                                add_badge=intent.get("_add_badge", False))
+        caption = intent.get("_caption", "")
+        _finish_generation(phone, session, intent, stamped, caption, [])
+    except Exception as exc:
+        logger.exception("image_post restamp badge failed: %s", exc)
+        intent["_sub_step"] = "awaiting_review"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text", "text": f"😕 Couldn't update the badge ({exc}). Reply *approve* to keep it."})
+
+
 def _edit_image_bg(phone: str, session: UserSession, intent: dict, instruction: str) -> None:
     """Apply a visual edit to the CURRENT image (img2img), keep it as the new base."""
     try:
@@ -805,7 +845,8 @@ def _edit_image_bg(phone: str, session: UserSession, intent: dict, instruction: 
         up = aws_storage.upload_bytes(raw, content_type="image/jpeg", extension="jpg",
                                       folder=f"{user_id}/posts")
         new_url = up.get("s3_url") or gen["url"]
-        stamped = _stamp_images([new_url], session=session, user_id=user_id)
+        intent["_raw_image_urls"] = [new_url]   # keep the un-badged edit as the base
+        stamped = _stamp_images([new_url], session=session, user_id=user_id, add_badge=intent.get("_add_badge", False))
         caption = intent.get("_caption", "")
         _finish_generation(phone, session, intent, stamped, caption, [])
     except Exception as exc:
@@ -871,10 +912,11 @@ def _to_whatsapp_safe_jpeg(raw: bytes) -> bytes:
 
 
 def _stamp_images(
-    s3_urls: list[str], session: UserSession, user_id: str
+    s3_urls: list[str], session: UserSession, user_id: str, add_badge: bool = False
 ) -> list[str]:
-    """Stamp profile badge + guarantee a WhatsApp-safe JPEG for every image.
-    Always re-encodes to JPEG so Twilio/WhatsApp never drops oversized PNG/WebP."""
+    """Guarantee a WhatsApp-safe JPEG for every image, and add the profile badge ONLY
+    when add_badge is True (default: no badge). Always re-encodes to JPEG so
+    Twilio/WhatsApp never drops oversized PNG/WebP."""
     import requests as _req
     username   = session.instagram_username or session.brand_name or "brand"
     brand_name = session.brand_name or ""
@@ -888,13 +930,14 @@ def _stamp_images(
             r = _req.get(url, timeout=20)
             r.raise_for_status()
             try:
-                # Try stamping (returns JPEG bytes)
+                # Try stamping (returns JPEG bytes) — badge only if requested
                 final_bytes = stamp_post_image(
                     r.content,
                     username=username,
                     brand_name=brand_name,
                     avatar_url=avatar_url,
                     style_compositor=compositor,
+                    add_badge=add_badge,
                 )
             except Exception as exc:
                 logger.warning("stamp failed, falling back to plain JPEG: %s", exc)

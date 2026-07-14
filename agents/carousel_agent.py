@@ -213,6 +213,12 @@ def handle_step(
         # Visual change → rebuild the carousel with the instruction folded into the brief
         if action in ("edit_image", "regenerate"):
             instruction = value or msg
+            instr_low = instruction.lower()
+            # Profile-badge toggle (badge is OFF by default) — set the flag and rebuild
+            if "badge" in instr_low or ("logo" in instr_low and any(
+                    w in instr_low for w in ("add", "remove", "no ", "without", "hide"))):
+                intent["_add_badge"] = (any(w in instr_low for w in ("add", "put", "with", "include", "want", "show"))
+                                        and not any(w in instr_low for w in ("remove", "no ", "without", "don't", "dont", "hide")))
             if action == "edit_image":
                 intent["_edit_history"] = (intent.get("_edit_history") or []) + [instruction]
                 intent["description"] = f"{intent.get('description','')} — {instruction}".strip(" —")
@@ -388,6 +394,7 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
             brand_name=session.brand_name or "",
             avatar_url=session.brand_assets[0] if session.brand_assets else None,
             style_compositor=compositor,
+            add_badge=intent.get("_add_badge", False),
         )
 
         # Upload slides

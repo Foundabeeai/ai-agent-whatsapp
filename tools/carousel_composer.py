@@ -769,6 +769,7 @@ def make_research_carousel(
     hook_image_bytes: Optional[bytes] = None,
     extra_bg_bytes: Optional[list[bytes]] = None,
     style_compositor: Optional[dict] = None,
+    add_badge: bool = False,
 ) -> list[bytes]:
     """
     Render a full research carousel. Returns list of JPEG bytes (one per slide).
@@ -790,6 +791,8 @@ def make_research_carousel(
             pass
 
     comp    = _apply_compositor(style_compositor)
+    # Profile badge is OFF by default — only drawn when the user explicitly asks for one.
+    comp["badge_present"] = bool(add_badge)
     # Override brand_colors with compositor accent if present and no explicit brand_colors given
     if not brand_colors and comp.get("accent_color"):
         brand_colors = {
@@ -877,8 +880,11 @@ def stamp_post_image(
     brand_name: str,
     avatar_url: Optional[str] = None,
     style_compositor: Optional[dict] = None,
+    add_badge: bool = False,
 ) -> bytes:
     comp = _apply_compositor(style_compositor)
+    # Profile badge OFF by default — only when the user explicitly asks for one.
+    comp["badge_present"] = bool(add_badge)
     W    = int(comp.get("canvas_w", _W))
     H    = int(comp.get("canvas_h", _H))
 
