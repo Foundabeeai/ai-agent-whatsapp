@@ -363,6 +363,14 @@ def handle_step(
 
     # ── Waiting for publish action ─────────────────────────────────────────
     if sub_step == "awaiting_publish":
+        low = msg.lower()
+        # Explicit cancel/skip → dismiss and go back to the menu
+        if low in ("skip", "cancel", "no", "nevermind", "never mind", "stop", "dismiss", "not now", "leave it"):
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            session.agent_intent = None
+            save_session(session)
+            return {"kind": "text", "text": "👍 No worries — saved as a draft. Say *create* anytime to make something new."}
+
         action, _ = classify_action(msg, "publish_action", ["now", "schedule", "cancel"])
 
         if action == "now":
@@ -378,7 +386,13 @@ def handle_step(
             save_session(session)
             return {"kind": "text", "text": "⏰ When should I post it? (e.g. *tomorrow at 9am* or *Friday 3pm*)"}
 
-        return {"kind": "text", "text": "📤 Publish *now*, or *schedule* for a specific time?"}
+        if action == "cancel":
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            session.agent_intent = None
+            save_session(session)
+            return {"kind": "text", "text": "👍 Cancelled — saved as a draft. Say *create* anytime."}
+
+        return {"kind": "text", "text": "📤 Reply *now* to publish, *schedule* for later, or *skip* to save as draft."}
 
     # ── Waiting for schedule time ──────────────────────────────────────────
     if sub_step == "awaiting_schedule_time":

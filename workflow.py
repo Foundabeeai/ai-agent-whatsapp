@@ -112,9 +112,10 @@ _send_locks: dict[str, threading.Lock] = {}
 _send_locks_mutex = threading.Lock()
 
 def _get_send_lock(phone: str):
-    if config.SHARED_STATE:
-        import db as _db
-        return _db.MongoLock(f"send:{phone}", ttl=30.0, wait_timeout=25.0)
+    # Per-instance lock. This is enough because webhook dedup routes a given message
+    # to exactly one instance, so the only real interleave risk is that instance's own
+    # background threads (generation progress messages) — which this serializes. A
+    # distributed lock here caused cross-instance stalls, so we keep it in-process.
     with _send_locks_mutex:
         if phone not in _send_locks:
             _send_locks[phone] = threading.Lock()
