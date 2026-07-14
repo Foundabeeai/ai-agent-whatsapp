@@ -37,6 +37,24 @@ import config as _config
 _seen_sids: dict[str, tuple[str, float]] = {}   # phone → (last_sid, timestamp)
 _DEDUP_WINDOW = 60.0   # seconds — ignore duplicate SID within this window
 
+import threading as _threading
+_proc_locks: dict[str, _threading.Lock] = {}
+_proc_locks_mutex = _threading.Lock()
+
+def _get_proc_lock(phone: str):
+    """
+    Per-user PROCESSING lock so a user's messages are handled strictly one-at-a-time.
+    Fleet-wide (MongoDB) in SHARED_STATE so rapid messages landing on different
+    instances can't read/advance the same session simultaneously and scramble context.
+    """
+    if getattr(_config, "SHARED_STATE", False):
+        return db.MongoLock(f"proc:{phone}", ttl=45.0, wait_timeout=40.0)
+    with _proc_locks_mutex:
+        if phone not in _proc_locks:
+            _proc_locks[phone] = _threading.Lock()
+        return _proc_locks[phone]
+
+
 def _is_duplicate(phone: str, sid: str) -> bool:
     if not sid:
         return False
@@ -155,13 +173,16 @@ def whatsapp_webhook():
         return Response(str(MessagingResponse()), mimetype="text/xml; charset=utf-8")
 
     try:
-        payload = handle_incoming_message(
-            from_number,
-            body,
-            button_payload=button_payload,
-            media_urls=media_urls,
-            media_types=media_types,
-        )
+        # Serialize this user's messages (fleet-wide) so rapid-fire messages on
+        # different instances can't scramble the conversation state.
+        with _get_proc_lock(from_number):
+            payload = handle_incoming_message(
+                from_number,
+                body,
+                button_payload=button_payload,
+                media_urls=media_urls,
+                media_types=media_types,
+            )
     except Exception as exc:
         payload = {"kind": "text",
                    "text": f"🐝 Bee here — something went wrong on my end. Please try again. ({exc})"}
