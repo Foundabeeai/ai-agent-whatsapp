@@ -195,34 +195,43 @@ def handle_step(
                             + ("" if have_count else "\n🔢 And how many slides? (3–8)")}
         return {"kind": "text", "text": "🔢 Got it! How many slides would you like? Reply a number *3–8*."}
 
-    if sub_step == "awaiting_caption_choice":
+    if sub_step in ("awaiting_review", "awaiting_caption_choice"):
+        from tools.groq_ai import classify_post_review
         current_caption = intent.get("_caption", "")
-        action, value = classify_action(
-            msg, "caption_choice",
-            ["approve", "regenerate", "custom", "custom_text"],
-            extra_context=f"Caption: {current_caption[:200]}" if current_caption else "",
-        )
+        action, value = classify_post_review(msg, caption=current_caption, content_kind="carousel")
 
         if action == "approve":
             return _ask_publish(phone, session, intent, voice_confirmed)
 
-        if action == "regenerate":
+        if action == "publish":
+            intent["publish_action"] = "now"
+            session.agent_intent = intent
+            save_session(session)
+            threading.Thread(target=_publish_bg, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "none"}
+
+        # Visual change → rebuild the carousel with the instruction folded into the brief
+        if action in ("edit_image", "regenerate"):
+            instruction = value or msg
+            if action == "edit_image":
+                intent["_edit_history"] = (intent.get("_edit_history") or []) + [instruction]
+                intent["description"] = f"{intent.get('description','')} — {instruction}".strip(" —")
+            intent["_sub_step"] = "generating"
+            session.agent_intent = intent
+            save_session(session)
+            _send(phone, {"kind": "text",
+                          "text": (f"✏️ Applying: {instruction}\n" if action == "edit_image" else "🔄 Rebuilding fresh\n")
+                                  + "⏱ rebuilding your carousel..."})
+            threading.Thread(target=_generate_bg, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "none"}
+
+        if action == "edit_caption":
             threading.Thread(target=_regen_caption_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
 
-        if action == "custom_text":
-            intent["_caption"] = value or msg
-            session.agent_intent = intent
-            save_session(session)
-            return _ask_publish(phone, session, intent, voice_confirmed)
-
-        if action == "custom":
-            intent["_sub_step"] = "awaiting_custom_caption"
-            session.agent_intent = intent
-            save_session(session)
-            return {"kind": "text", "text": "✏️ Type your caption:"}
-
-        return {"kind": "text", "text": "✅ *approve* · ✏️ type a custom caption · 🔄 *regenerate*"}
+        return {"kind": "text",
+                "text": "Tell me any change (e.g. *brighter*, *different style*, *shorter caption*), "
+                        "or reply *approve* to publish."}
 
     if sub_step == "awaiting_custom_caption":
         if msg:
@@ -408,7 +417,7 @@ def _regen_caption_bg(phone: str, session: UserSession, intent: dict) -> None:
             style_skill=style_skill,
         )
         intent["_caption"]  = caption
-        intent["_sub_step"] = "awaiting_caption_choice"
+        intent["_sub_step"] = "awaiting_review"
         session.agent_intent = intent
         save_session(session)
         _send(phone, {"kind": "text",
@@ -491,15 +500,16 @@ def _finish_generation(
     _send(phone, {
         "kind": "text",
         "text": (
-            f"✍️ *Caption:*\n\n{caption}\n\n"
-            "✅ *approve* · ✏️ custom caption · 🔄 *regenerate*"
+            f"✍️ *Caption:*\n{caption}\n\n"
+            "💬 *Want changes?* Tell me — e.g. _\"different style\"_, _\"brighter\"_, "
+            "_\"shorter caption\"_.\n✅ Reply *approve* when you love it."
         ),
     }, tts=voice_ok)
 
     intent["_image_urls"] = s3_urls
     intent["_caption"]    = caption
     intent["_prompts"]    = prompts
-    intent["_sub_step"]   = "awaiting_caption_choice"
+    intent["_sub_step"]   = "awaiting_review"
     session.agent_intent  = intent
     session.step          = STEP_AGENT_CAROUSEL
     save_session(session)

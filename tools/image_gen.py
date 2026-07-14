@@ -340,6 +340,22 @@ def _pad_to_9x16_green(img_bytes: bytes, canvas=(1080, 1920)) -> bytes:
     return out.getvalue()
 
 
+@traceable(run_type="tool", name="edit_image")
+def edit_image(image_url: str, instruction: str, aspect_ratio: str = "1:1") -> dict:
+    """
+    Apply a targeted edit to an EXISTING generated image (img2img on it), changing only
+    what the user asked and preserving the rest — the way a designer iterates.
+    Returns {"ok": True, "url": "..."} or {"ok": False, "error": "..."}.
+    """
+    prompt = (
+        f"Apply this specific change to the reference image: {instruction}. "
+        "Keep EVERYTHING else identical — same main subject, composition, framing, layout, "
+        "colours and overall style — change ONLY what was requested, nothing more. "
+        "Photorealistic, ultra-sharp, high quality, professional."
+    )
+    return generate_image_with_reference(prompt, image_url, aspect_ratio=aspect_ratio)
+
+
 @traceable(run_type="tool", name="generate_greenscreen_portrait")
 def generate_greenscreen_portrait(
     person_image_url: str,

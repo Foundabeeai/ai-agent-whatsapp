@@ -1775,6 +1775,65 @@ def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
 # Sub-agent action classifier — replaces keyword matching in step handlers
 # ---------------------------------------------------------------------------
 
+@traceable(run_type="chain", name="classify_post_review")
+def classify_post_review(user_message: str, caption: str = "", content_kind: str = "post") -> tuple[str, str]:
+    """
+    Understand what the user wants after seeing a generated post/carousel — the
+    conversational-editing brain. Returns (action, value):
+      action ∈ {approve, edit_image, edit_caption, regenerate, publish, unknown}
+      value  = the edit instruction (for edit_image) or caption text/request (edit_caption)
+
+    Defaults an ambiguous free-form message to edit_image, because in review the user is
+    almost always asking to change how it looks.
+    """
+    import json as _json, re as _re
+    msg = (user_message or "").strip()
+    low = msg.lower()
+
+    # Fast, unambiguous cases
+    if low in {"approve", "approved", "yes", "yep", "looks good", "looks great", "perfect",
+               "great", "love it", "nice", "good", "ok", "okay", "👍", "✅", "done"}:
+        return "approve", ""
+    if low in {"regenerate", "redo", "again", "new image", "start over", "fresh", "different image"}:
+        return "regenerate", ""
+    if low in {"publish", "post", "post now", "publish now", "go live", "post it"}:
+        return "publish", ""
+
+    system = (
+        f"The user was just shown a generated {content_kind} (image + caption) and replied. "
+        "Classify what they want and extract any instruction. Return ONLY JSON:\n"
+        '{"action": "...", "value": "..."}\n\n'
+        "action options:\n"
+        "  approve      — they're happy with the image as-is\n"
+        "  edit_image   — they want to CHANGE how the image LOOKS. Examples: 'make it brighter', "
+        "'bigger logo', 'change the background to a beach', 'more vibrant', 'remove the text', "
+        "'warmer tones', 'move the product to the left', 'add sunlight', 'less cluttered'. "
+        "Put the exact requested change in value.\n"
+        "  edit_caption — they want to change the CAPTION wording/text. Put the request in value.\n"
+        "  regenerate   — they want a completely different, fresh image\n"
+        "  publish      — they want to publish/post it now\n"
+        "Rules: if the message describes a visual change, use edit_image. If it's about the "
+        "words/caption, use edit_caption. When in doubt, prefer edit_image with the message as value. "
+        "Output ONLY the JSON."
+    )
+    user = f'Caption shown: "{caption[:200]}"\nUser said: "{msg}"'
+    try:
+        raw = _chat(system, user, temperature=0.0, max_tokens=1500)
+        raw = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+        data = _json.loads(raw)
+        action = str(data.get("action") or "").strip()
+        value = str(data.get("value") or "").strip()
+        if action not in {"approve", "edit_image", "edit_caption", "regenerate", "publish"}:
+            action = "edit_image"
+            value = value or msg
+        if action in ("edit_image", "edit_caption") and not value:
+            value = msg
+        return action, value
+    except Exception:
+        # Safe default: treat as an image edit using the raw message
+        return "edit_image", msg
+
+
 @traceable(run_type="chain", name="classify_action")
 def classify_action(
     user_message: str,

@@ -287,38 +287,70 @@ def handle_step(
 
         return {"kind": "text", "text": "📸 Send your product image or a link, or say *skip* to generate from scratch."}
 
-    # ── Waiting for caption choice ─────────────────────────────────────────
-    if sub_step == "awaiting_caption_choice":
+    # ── Reviewing the generated post — conversational editing loop ──────────
+    if sub_step in ("awaiting_review", "awaiting_caption_choice"):
+        from tools.groq_ai import classify_post_review
         current_caption = intent.get("_caption", "")
-        action, value = classify_action(
-            msg, "caption_choice",
-            ["approve", "regenerate", "custom", "custom_text"],
-            extra_context=f"Caption: {current_caption[:200]}" if current_caption else "",
-        )
+        action, value = classify_post_review(msg, caption=current_caption, content_kind="post")
+
+        # ✏️ Visual edit → img2img on the CURRENT image, preserving the rest
+        if action == "edit_image":
+            instruction = value or msg
+            intent["_edit_history"] = (intent.get("_edit_history") or []) + [instruction]
+            intent["_sub_step"] = "editing"
+            session.agent_intent = intent
+            save_session(session)
+            threading.Thread(target=_edit_image_bg, args=(phone, session, intent, instruction),
+                             daemon=True).start()
+            _send(phone, {"kind": "text",
+                          "text": f"✏️ On it — {instruction}\n⏱ ~40s..."}, tts=voice_confirmed)
+            return {"kind": "none"}
 
         if action == "approve":
             return _ask_publish_action(phone, session, intent, voice_confirmed)
 
+        if action == "publish":
+            intent["publish_action"] = "now"
+            session.agent_intent = intent
+            save_session(session)
+            threading.Thread(target=_publish_bg, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "none"}
+
         if action == "regenerate":
+            # Fresh image, informed by any edits the user has asked for so far
+            hist = intent.get("_edit_history") or []
+            if hist:
+                intent["style_notes"] = (intent.get("style_notes", "") + " " + " ".join(hist)).strip()
             intent["_sub_step"] = "generating"
             session.agent_intent = intent
             save_session(session)
-            threading.Thread(target=_regenerate_caption_bg, args=(phone, session, intent), daemon=True).start()
+            threading.Thread(target=_generate_no_image_bg, args=(phone, session, intent),
+                             daemon=True).start()
+            _send(phone, {"kind": "text", "text": "🔄 Creating a fresh version...\n⏱ ~90s ☕"})
             return {"kind": "none"}
 
-        if action == "custom_text":
-            intent["_caption"] = value or msg
+        if action == "edit_caption":
+            # If they typed an actual caption use it; else rewrite toward their request
+            if len(value.split()) > 6 and not value.lower().startswith(("make", "change", "shorter", "longer", "add", "remove")):
+                intent["_caption"] = value
+                session.agent_intent = intent
+                save_session(session)
+                _send(phone, {"kind": "text", "text": f"✍️ Updated caption:\n\n{value}"})
+                return {"kind": "text", "text": "Any more changes, or reply *approve* to publish?"}
+            intent["_caption_instruction"] = value or msg
+            intent["_sub_step"] = "editing"
             session.agent_intent = intent
             save_session(session)
-            return _ask_publish_action(phone, session, intent, voice_confirmed)
+            threading.Thread(target=_rewrite_caption_bg, args=(phone, session, intent, value or msg),
+                             daemon=True).start()
+            return {"kind": "none"}
 
-        if action == "custom":
-            intent["_sub_step"] = "awaiting_custom_caption"
-            session.agent_intent = intent
-            save_session(session)
-            return {"kind": "text", "text": "✏️ Type your caption and I'll use it:"}
+        return {"kind": "text",
+                "text": "Tell me any change (e.g. *make it brighter*, *bigger logo*, *beach background*), "
+                        "or reply *approve* to publish · ✍️ change caption · 🔄 regenerate"}
 
-        return {"kind": "text", "text": "✅ *approve* · ✏️ type a custom caption · 🔄 *regenerate*"}
+    if sub_step == "editing":
+        return {"kind": "text", "text": "⏳ Applying your change — one moment..."}
 
     # ── Waiting for custom caption ─────────────────────────────────────────
     if sub_step == "awaiting_custom_caption":
@@ -613,7 +645,7 @@ def _regenerate_caption_bg(phone: str, session: UserSession, intent: dict) -> No
             style_skill=style_skill,
         )
         intent["_caption"] = caption
-        intent["_sub_step"] = "awaiting_caption_choice"
+        intent["_sub_step"] = "awaiting_review"
         session.agent_intent = intent
         save_session(session)
         _send(phone, {"kind": "text", "text": f"✍️ New caption:\n\n{caption}\n\n✅ *approve* · ✏️ *custom* · 🔄 *regenerate*"})
@@ -710,36 +742,89 @@ def _finish_generation(
     caption: str,
     prompts: list[str],
 ) -> None:
-    """Send images + caption to user, set up caption-choice sub-step."""
+    """Send image + caption, then invite conversational edits (review loop)."""
     if not s3_urls:
         _send(phone, {"kind": "text", "text": "😕 Generation produced no images. Please try again."})
         return
 
     voice_ok = intent.get("_voice_confirmed", False)
+    is_edit  = bool(intent.get("_edit_history"))   # this is a refined version
 
-    # Send images — WhatsApp requires a non-empty body on media messages
     for url in s3_urls:
         _send(phone, {"kind": "media", "text": "📸", "media_url": url})
         time.sleep(1.5)
 
-    # Send caption for review
     _send(phone, {
         "kind": "text",
         "text": (
-            f"✍️ *Suggested caption:*\n\n{caption}\n\n"
-            "✅ Reply *approve*\n"
-            "✏️ Type a custom caption\n"
-            "🔄 Say *regenerate* for a new one"
+            (f"✨ *Updated!* {intent['_edit_history'][-1]}\n\n" if is_edit else "")
+            + f"✍️ *Caption:*\n{caption}\n\n"
+            "💬 *Want changes?* Just tell me — e.g. _\"make it brighter\"_, _\"bigger logo\"_, "
+            "_\"beach background\"_, _\"remove the text\"_, or _\"shorter caption\"_.\n"
+            "✅ Reply *approve* when you love it."
         ),
     }, tts=voice_ok)
 
     intent["_image_urls"] = s3_urls
     intent["_caption"]    = caption
-    intent["_prompts"]    = prompts
-    intent["_sub_step"]   = "awaiting_caption_choice"
+    if prompts:
+        intent["_prompts"] = prompts
+    intent["_sub_step"]   = "awaiting_review"
     session.agent_intent  = intent
     session.step          = STEP_AGENT_IMAGE_POST
     save_session(session)
+
+
+def _edit_image_bg(phone: str, session: UserSession, intent: dict, instruction: str) -> None:
+    """Apply a visual edit to the CURRENT image (img2img), keep it as the new base."""
+    try:
+        user_id = session.verified_user_id or phone
+        current = (intent.get("_image_urls") or [None])[0]
+        if not current:
+            raise RuntimeError("no current image to edit")
+        gen = image_gen.edit_image(current, instruction, aspect_ratio="1:1")
+        if not gen.get("ok") or not gen.get("url"):
+            raise RuntimeError(gen.get("error", "edit failed"))
+        # download → stamp badge → upload
+        import requests as _req
+        raw = _req.get(gen["url"], timeout=60).content
+        up = aws_storage.upload_bytes(raw, content_type="image/jpeg", extension="jpg",
+                                      folder=f"{user_id}/posts")
+        new_url = up.get("s3_url") or gen["url"]
+        stamped = _stamp_images([new_url], session=session, user_id=user_id)
+        caption = intent.get("_caption", "")
+        _finish_generation(phone, session, intent, stamped, caption, [])
+    except Exception as exc:
+        logger.exception("image_post edit failed: %s", exc)
+        intent["_sub_step"] = "awaiting_review"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text",
+                      "text": f"😕 Couldn't apply that change ({exc}). Try describing it differently, "
+                              "or reply *approve* to keep the current version."})
+
+
+def _rewrite_caption_bg(phone: str, session: UserSession, intent: dict, request: str) -> None:
+    """Rewrite the caption according to the user's instruction, keep the image."""
+    try:
+        current = intent.get("_caption", "")
+        description = intent.get("description", "")
+        system = ("You revise an Instagram caption per the user's instruction. Keep it natural and "
+                  "on-brand. Output ONLY the new caption text.")
+        user = f"Current caption:\n{current}\n\nChange requested: {request}\n\nTopic: {description}"
+        new_caption = groq_ai._chat(system, user, temperature=0.7).strip() or current
+        intent["_caption"] = new_caption
+        intent["_sub_step"] = "awaiting_review"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text",
+                      "text": f"✍️ *Updated caption:*\n{new_caption}\n\n"
+                              "Any more changes, or reply *approve* to publish?"})
+    except Exception as exc:
+        intent["_sub_step"] = "awaiting_review"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text", "text": f"😕 Caption edit failed: {exc}"})
 
 
 def _ask_publish_action(
