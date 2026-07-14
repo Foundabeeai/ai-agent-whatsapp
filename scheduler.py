@@ -186,10 +186,26 @@ def start() -> None:
     _logger.info("BeeQ daily scheduler started")
 
 
+def _instance_id() -> str:
+    import socket, os
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
 def _scheduler_loop() -> None:
+    import config
+    inst = _instance_id()
     while True:
         try:
-            _tick()
+            # In multi-instance (SHARED_STATE) mode, only the elected LEADER runs the
+            # daily loop, so the send logic runs on ONE instance. (The per-user atomic
+            # claim in _maybe_send_suggestion is a second safety net either way.)
+            if config.SHARED_STATE:
+                if db.acquire_scheduler_leadership(inst):
+                    _tick()
+                else:
+                    _logger.debug("scheduler: not leader (%s) — skipping tick", inst)
+            else:
+                _tick()
         except Exception as exc:
             _logger.error("scheduler tick error: %s", exc)
         time.sleep(60)

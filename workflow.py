@@ -104,11 +104,17 @@ from tools.whatsapp import (
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
-# Per-phone send lock — ensures background threads never interleave messages
+# Per-phone send lock — ensures messages to a user never interleave.
+#  - single instance  → a fast in-process threading.Lock
+#  - SHARED_STATE (multi-instance) → a distributed MongoLock so two instances can't
+#    send to the same user at once.
 _send_locks: dict[str, threading.Lock] = {}
 _send_locks_mutex = threading.Lock()
 
-def _get_send_lock(phone: str) -> threading.Lock:
+def _get_send_lock(phone: str):
+    if config.SHARED_STATE:
+        import db as _db
+        return _db.MongoLock(f"send:{phone}", ttl=30.0, wait_timeout=25.0)
     with _send_locks_mutex:
         if phone not in _send_locks:
             _send_locks[phone] = threading.Lock()

@@ -62,6 +62,11 @@ def _ensure_indexes(db: Database) -> None:
     db.content_calendars.create_index([("phone_number", 1)], unique=True)
     db.content_calendars.create_index([("token", 1)], unique=True)
     db.post_style_skills.create_index([("phone_number", 1)], unique=True)
+    # Distributed locks (send lock + scheduler leader) — TTL index auto-cleans dead locks
+    try:
+        db.locks.create_index("expireAt", expireAfterSeconds=0)
+    except Exception:
+        pass
 
 
 def log_inbound(phone_number: str, text: str, media_urls: list[str] | None = None) -> None:
@@ -489,6 +494,90 @@ def get_content_calendar(phone_number: str) -> dict | None:
         return doc
     except Exception:
         return None
+
+
+def _now_utc():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+class MongoLock:
+    """
+    A distributed lock backed by MongoDB, usable as a context manager:
+        with MongoLock(f"send:{phone}"):
+            ...critical section...
+    Only one holder across ALL instances runs the section at a time. A TTL field +
+    stale-check means a crashed holder's lock is reclaimed automatically.
+    """
+    def __init__(self, key: str, ttl: float = 30.0, wait_timeout: float = 25.0):
+        self.key = key
+        self.ttl = ttl
+        self.wait_timeout = wait_timeout
+        self._acquired = False
+
+    def __enter__(self):
+        import time as _t
+        from datetime import timedelta
+        from pymongo.errors import DuplicateKeyError
+        col = get_db().locks
+        deadline = _t.time() + self.wait_timeout
+        while _t.time() < deadline:
+            now = _now_utc()
+            try:
+                col.insert_one({"_id": self.key, "expireAt": now + timedelta(seconds=self.ttl)})
+                self._acquired = True
+                return self
+            except DuplicateKeyError:
+                # Held — reclaim if the existing lock has expired, else wait briefly
+                try:
+                    existing = col.find_one({"_id": self.key})
+                    if existing and existing.get("expireAt") and existing["expireAt"] < now:
+                        col.delete_one({"_id": self.key, "expireAt": existing["expireAt"]})
+                        continue
+                except Exception:
+                    pass
+                _t.sleep(0.05)
+            except Exception:
+                # DB trouble — fail open so messages still send (don't hang the bot)
+                return self
+        return self  # timed out waiting — proceed rather than block forever
+
+    def __exit__(self, *exc):
+        if self._acquired:
+            try:
+                get_db().locks.delete_one({"_id": self.key})
+            except Exception:
+                pass
+        return False
+
+
+def acquire_scheduler_leadership(instance_id: str, ttl: int = 120) -> bool:
+    """
+    Try to become (or stay) the single scheduler leader. Returns True if THIS instance
+    holds leadership. Renew each tick; if the leader dies, another instance takes over
+    after the TTL expires. Ensures the daily loop effectively runs on ONE instance.
+    """
+    from datetime import timedelta
+    from pymongo.errors import DuplicateKeyError
+    col = get_db().locks
+    now = _now_utc()
+    try:
+        col.update_one(
+            {"_id": "scheduler:leader",
+             "$or": [{"holder": instance_id}, {"expireAt": {"$lt": now}}]},
+            {"$set": {"holder": instance_id, "expireAt": now + timedelta(seconds=ttl)}},
+            upsert=True,
+        )
+    except DuplicateKeyError:
+        pass  # someone else holds it
+    except Exception:
+        return True  # DB trouble — don't stall the scheduler entirely
+    try:
+        doc = col.find_one({"_id": "scheduler:leader"})
+        return bool(doc and doc.get("holder") == instance_id
+                    and doc.get("expireAt") and doc["expireAt"] > now)
+    except Exception:
+        return True
 
 
 def claim_daily_suggestion(phone_number: str, date_str: str) -> bool:
