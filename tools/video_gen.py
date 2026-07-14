@@ -21,6 +21,7 @@ import requests
 import replicate as _replicate
 
 import config
+from tools.replicate_queue import gated as _gated
 
 # ── Concurrency cap for LOCAL video compositing (moviepy/ffmpeg) ─────────────
 # Each local composite uses ~1 GB RAM + a full core for minutes. Cap how many
@@ -141,6 +142,7 @@ def generate_video_from_image(
 # Talking-head lip-sync  (veed/fabric-1.0)
 # ---------------------------------------------------------------------------
 
+@_gated("lipsync")
 def generate_lipsync_video(
     image_url: str,
     audio_url: str,
@@ -662,6 +664,7 @@ def add_text_overlays(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+@_gated("captions")
 def add_tiktok_captions(
     video_bytes: bytes,
     highlight_color: str = "#FFFF00",

@@ -28,6 +28,7 @@ import os
 import requests
 
 import config
+from tools.replicate_queue import gated as _gated
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ def transcribe_audio_url(media_url: str) -> str | None:
 # TTS — Replicate inworld/realtime-tts-2 → S3 → presigned URL
 # ---------------------------------------------------------------------------
 
+@_gated("tts")
 def synthesize_and_upload(
     text: str,
     voice_id: str | None = None,

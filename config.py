@@ -102,6 +102,11 @@ VIDEO_BUILD_CONCURRENCY = _get_int("VIDEO_BUILD_CONCURRENCY", 2)
 # in-memory cache, which would otherwise go stale across instances).
 SHARED_STATE = _get("SHARED_STATE", "").lower() in ("1", "true", "yes", "on")
 
+# Max number of Replicate predictions allowed IN FLIGHT at once (per instance).
+# Extra requests queue and wait rather than all firing simultaneously — protects
+# against Replicate rate/concurrency limits and thread pile-ups under load.
+REPLICATE_CONCURRENCY = _get_int("REPLICATE_CONCURRENCY", 6)
+
 # Groq vision model for product image analysis
 GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 

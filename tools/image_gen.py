@@ -12,6 +12,7 @@ import requests as _requests
 from replicate.exceptions import ReplicateError
 
 import config
+from tools.replicate_queue import gated as _gated
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ def _make_realistic(prompt: str) -> str:
     return prompt.rstrip(" ,") + _REALISM_SUFFIX
 
 
+@_gated("image")
 def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[str] | None = None) -> dict:
     """
     Generate a single image with bytedance/seedream-4.5 via Replicate.
@@ -224,6 +226,7 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
 
 _SEEDREAM_MODEL = "bytedance/seedream-4.5"
 
+@_gated("image_ref")
 def generate_image_with_reference(
     prompt: str,
     image_url: str | None,
@@ -410,6 +413,7 @@ def generate_images(
 # SeedDream product post generation (strict product preservation)
 # ---------------------------------------------------------------------------
 
+@_gated("product")
 def generate_product_post(
     prompt: str,
     product_image_url: str,
