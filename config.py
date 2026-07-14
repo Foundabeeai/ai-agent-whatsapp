@@ -107,6 +107,14 @@ SHARED_STATE = _get("SHARED_STATE", "").lower() in ("1", "true", "yes", "on")
 # against Replicate rate/concurrency limits and thread pile-ups under load.
 REPLICATE_CONCURRENCY = _get_int("REPLICATE_CONCURRENCY", 6)
 
+# In SHARED_STATE (multi-instance) mode the queue becomes DISTRIBUTED (MongoDB-backed),
+# so this cap is GLOBAL across all instances — the whole fleet runs at most this many
+# Replicate predictions at once. Keep it under your Replicate plan's concurrency limit.
+REPLICATE_GLOBAL_CONCURRENCY = _get_int("REPLICATE_GLOBAL_CONCURRENCY", 6)
+# Max seconds a request waits in the distributed queue before "failing open" (proceeding
+# anyway) so a stuck queue never hangs the bot forever.
+REPLICATE_QUEUE_WAIT = _get_int("REPLICATE_QUEUE_WAIT", 900)
+
 # Groq vision model for product image analysis
 GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 

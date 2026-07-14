@@ -551,6 +551,57 @@ class MongoLock:
         return False
 
 
+def acquire_replicate_slot(limit: int, ttl: float, wait_timeout: float,
+                           label: str = "replicate") -> str | None:
+    """
+    Acquire one of a fixed pool of `limit` GLOBAL Replicate slots (across all instances).
+    Returns the claimed slot id (hold it until release), or None if it timed out waiting
+    (caller should fail open and proceed). Expired slots (crashed holders) are reclaimed.
+    """
+    import time as _t
+    from datetime import timedelta
+    from pymongo.errors import DuplicateKeyError
+    col = get_db().locks
+    slot_ids = [f"replicate:slot:{i}" for i in range(max(1, int(limit)))]
+    deadline = _t.time() + wait_timeout
+    while _t.time() < deadline:
+        now = _now_utc()
+        # Reclaim any expired slots (dead holders) before trying to claim one
+        try:
+            col.delete_many({"_id": {"$in": slot_ids}, "expireAt": {"$lt": now}})
+        except Exception:
+            pass
+        for sid in slot_ids:
+            try:
+                col.insert_one({"_id": sid, "expireAt": now + timedelta(seconds=ttl), "label": label})
+                return sid
+            except DuplicateKeyError:
+                continue           # this slot is held — try the next
+            except Exception:
+                return None        # DB trouble → fail open
+        _t.sleep(0.15)             # all full — wait briefly, then retry
+    return None                    # timed out waiting
+
+
+def renew_replicate_slot(slot_id: str, ttl: float) -> None:
+    """Extend a held Replicate slot's lease (heartbeat) so long predictions keep it."""
+    from datetime import timedelta
+    try:
+        get_db().locks.update_one(
+            {"_id": slot_id},
+            {"$set": {"expireAt": _now_utc() + timedelta(seconds=ttl)}},
+        )
+    except Exception:
+        pass
+
+
+def release_replicate_slot(slot_id: str) -> None:
+    try:
+        get_db().locks.delete_one({"_id": slot_id})
+    except Exception:
+        pass
+
+
 def acquire_scheduler_leadership(instance_id: str, ttl: int = 120) -> bool:
     """
     Try to become (or stay) the single scheduler leader. Returns True if THIS instance

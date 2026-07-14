@@ -46,18 +46,23 @@ def stats() -> dict:
         return {"max": _MAX, "active": _active, "waiting": _waiting}
 
 
+# Lease settings for the distributed (multi-instance) queue. TTL must comfortably
+# exceed a single prediction; a heartbeat renews it, and a crash reclaims it after TTL.
+_DIST_TTL = 180.0       # seconds
+_DIST_HEARTBEAT = 60.0  # renew the lease this often
+
+
 @contextmanager
-def slot(label: str = "replicate"):
-    """Acquire a Replicate slot for the duration of the block; queue if none free."""
+def _local_slot(label: str):
+    """Per-process bounded-semaphore slot (single-instance mode)."""
     global _active, _waiting
     got = _SEMA.acquire(blocking=False)
     if not got:
         with _lock:
             _waiting += 1
-        depth = stats()["waiting"]
-        logger.info("replicate_queue: '%s' queued (%d waiting, cap=%d)", label, depth, _MAX)
+        logger.info("replicate_queue: '%s' queued (%d waiting, cap=%d)", label, stats()["waiting"], _MAX)
         t0 = time.time()
-        _SEMA.acquire()          # block until a slot frees
+        _SEMA.acquire()
         with _lock:
             _waiting -= 1
         logger.info("replicate_queue: '%s' started after %.1fs wait", label, time.time() - t0)
@@ -69,6 +74,49 @@ def slot(label: str = "replicate"):
         with _lock:
             _active -= 1
         _SEMA.release()
+
+
+@contextmanager
+def _distributed_slot(label: str):
+    """MongoDB-backed GLOBAL slot shared across all instances, with lease heartbeat."""
+    import db
+    limit = max(1, int(getattr(config, "REPLICATE_GLOBAL_CONCURRENCY", 6)))
+    wait  = float(getattr(config, "REPLICATE_QUEUE_WAIT", 900))
+    t0 = time.time()
+    sid = db.acquire_replicate_slot(limit, _DIST_TTL, wait, label)
+    if not sid:
+        logger.warning("replicate_queue: '%s' failed open after %.0fs (queue saturated)",
+                       label, time.time() - t0)
+        yield                       # fail open — proceed rather than hang forever
+        return
+    waited = time.time() - t0
+    if waited > 1.0:
+        logger.info("replicate_queue: '%s' got global slot %s after %.1fs", label, sid, waited)
+
+    # Heartbeat renews the lease so a long prediction keeps its slot
+    stop = threading.Event()
+    def _hb():
+        while not stop.wait(_DIST_HEARTBEAT):
+            db.renew_replicate_slot(sid, _DIST_TTL)
+    hb = threading.Thread(target=_hb, daemon=True, name=f"replq-hb-{sid}")
+    hb.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        db.release_replicate_slot(sid)
+
+
+@contextmanager
+def slot(label: str = "replicate"):
+    """Acquire a Replicate slot for the duration of the block; queue if none free.
+    Distributed (global) in SHARED_STATE mode, otherwise a fast per-process semaphore."""
+    if getattr(config, "SHARED_STATE", False):
+        with _distributed_slot(label):
+            yield
+    else:
+        with _local_slot(label):
+            yield
 
 
 def gated(label: str = "replicate"):
