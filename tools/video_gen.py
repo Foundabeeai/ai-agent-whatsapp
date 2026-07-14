@@ -63,6 +63,34 @@ os.environ.setdefault("REPLICATE_API_TOKEN", config.REPLICATE_API_TOKEN)
 _P_VIDEO_MODEL  = "prunaai/p-video"
 _FABRIC_MODEL   = "veed/fabric-1.0"
 _OPENVOICE_MODEL = "chenxwh/openvoice"
+_MATTING_MODEL  = ("arielreplicate/robust_video_matting:"
+                   "73d2128a371922d5d1abf0712a1d974be0e4e2358cc1218e4e34714767232bac")
+
+
+@_gated("video_matting")
+def matte_video_greenscreen(video_url: str) -> dict:
+    """
+    Remove the background from a user's video → a GREEN-SCREEN video (chroma key ready)
+    using arielreplicate/robust_video_matting. The person is preserved; the background
+    becomes solid green so we can composite them over AI B-roll.
+    Returns {"ok": True, "url": "..."} or {"ok": False, "error": "..."}.
+    """
+    if not config.REPLICATE_API_TOKEN:
+        return {"ok": False, "error": "REPLICATE_API_TOKEN not set"}
+    try:
+        output = _replicate.run(_MATTING_MODEL, input={
+            "input_video": video_url,
+            "output_type": "green-screen",
+        })
+        logger.info("video_gen.matting: output type=%s value=%r",
+                    type(output).__name__, str(output)[:200])
+        url = _resolve_url(output)
+        if not url:
+            return {"ok": False, "error": f"matting returned unexpected output: {output!r}"}
+        return {"ok": True, "url": url}
+    except Exception as exc:
+        logger.error("video_gen.matting failed: %s", exc, exc_info=True)
+        return {"ok": False, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------

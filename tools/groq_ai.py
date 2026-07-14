@@ -769,6 +769,10 @@ def extract_full_intent(
         "  - Unclear → 'unknown'\n\n"
 
         "reel_type: (check in THIS order — FIRST match wins)\n"
+        "  0. 'video_editor' — the user wants to EDIT / transform a video THEY WILL SEND / already sent "
+        "(their own footage). Signals: 'edit my video', 'edit this video', 'turn my video into a reel', "
+        "'make a trending cut of my video', 'add b-roll to my video', 'a video is attached to edit'. "
+        "If the message references editing the user's OWN existing video, choose 'video_editor'.\n"
         "  1. 'ugc_presentation' — the user appears/talks on camera AND it is ABOUT a specific "
         "product / property / service / listing (or a link is or will be involved). This is the "
         "DEFAULT for 'me talking about my <product/property>'. Signals: 'reel of me talking about my "
@@ -1620,6 +1624,69 @@ def generate_cinematic_product_prompts(
         f"black background, dramatic lighting, sharp focus, photorealistic, 8K"
     )
     return fallback, fallback
+
+
+@traceable(run_type="chain", name="generate_video_edit_plan")
+def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) -> dict:
+    """
+    Turn a user's talking-video transcript into a structured, trending edit plan that the
+    video-editor pipeline (B-roll + chromakey + captions + effects) executes.
+
+    Returns:
+      {
+        "title": str,
+        "story": str,                 # 1-line story summary
+        "segments": [
+          { "start": float, "end": float,   # seconds within the source video
+            "broll_prompt": str,            # what B-roll to generate for this beat (p-video)
+            "zoom": "in" | "out" | "none",  # camera move on the presenter
+            "caption": str,                 # short on-screen caption for this beat
+            "emphasis": str }               # optional overlay/infographic idea
+        ],
+        "cta": str
+      }
+    """
+    import json as _json, re as _re
+    target_segments = max(3, min(8, int(duration_sec // 4) or 3))
+    system = (
+        "You are a viral short-form video editor (Instagram Reels / TikTok). Given a transcript "
+        "of someone talking to camera, produce an EDIT PLAN that turns it into a trending cut with "
+        "B-roll behind them, punchy captions, and zoom emphasis.\n"
+        "Rules:\n"
+        f"- Break the video into about {target_segments} segments covering 0..{duration_sec:.1f}s, "
+        "contiguous, non-overlapping.\n"
+        "- For each segment: a B-roll prompt (cinematic, relevant to what's being said, no text/logos), "
+        "a zoom move (in for emphasis, out to breathe, none), one SHORT caption (max 6 words) matching "
+        "what they say in that beat, and an optional emphasis overlay (a stat, keyword, or icon idea).\n"
+        "- Keep it authentic to the transcript — don't invent facts.\n"
+        "- Output ONLY valid JSON matching the schema. No markdown."
+    )
+    user = (
+        f"Brand: {brand.get('brand_name') or ''} | Voice: {brand.get('brand_voice') or 'energetic'}\n"
+        f"Video duration: {duration_sec:.1f}s\n"
+        f"Transcript:\n{transcript}\n\n"
+        'Return JSON: {"title":"...","story":"...","segments":[{"start":0,"end":4,'
+        '"broll_prompt":"...","zoom":"in","caption":"...","emphasis":"..."}],"cta":"..."}'
+    )
+    raw = _chat(system, user, temperature=0.6, max_tokens=2000)
+    try:
+        clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+        data = _json.loads(clean)
+        if "segments" not in data or not isinstance(data["segments"], list):
+            raise ValueError("no segments")
+        return data
+    except Exception:
+        # Safe fallback: single full-length segment
+        return {
+            "title": (brand.get("brand_name") or "My video"),
+            "story": transcript[:120],
+            "segments": [{
+                "start": 0.0, "end": float(duration_sec or 15),
+                "broll_prompt": f"cinematic b-roll for {brand.get('brand_description') or 'the topic'}",
+                "zoom": "none", "caption": "", "emphasis": "",
+            }],
+            "cta": "Follow for more",
+        }
 
 
 def generate_ugc_script(description: str, brand: dict) -> str:

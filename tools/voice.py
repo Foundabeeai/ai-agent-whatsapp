@@ -46,6 +46,38 @@ _CLONE_MODEL       = "chenxwh/openvoice:d548923c9d7fc9330a3b7c7f9e2f91b2ee90c833
 # STT — transcribe Twilio audio URL with Groq Whisper
 # ---------------------------------------------------------------------------
 
+@traceable(run_type="tool", name="transcribe_video_url")
+def transcribe_video_url(url: str) -> str | None:
+    """
+    Transcribe the audio of a video at a public/presigned URL (e.g. S3) with Groq Whisper.
+    Whisper extracts audio from the container. Returns transcript text or None.
+    """
+    if not config.GROQ_API_KEY:
+        return None
+    try:
+        resp = requests.get(url, timeout=90)
+        resp.raise_for_status()
+        data = resp.content
+    except Exception as exc:
+        logger.error("voice.transcribe_video: download failed: %s", exc)
+        return None
+    try:
+        from groq import Groq
+        client = Groq(api_key=config.GROQ_API_KEY)
+        transcription = client.audio.transcriptions.create(
+            file=("video.mp4", io.BytesIO(data), "video/mp4"),
+            model="whisper-large-v3-turbo",
+            response_format="text",
+            language="en",
+        )
+        text = str(transcription).strip()
+        logger.info("voice.transcribe_video: got %d chars", len(text))
+        return text or None
+    except Exception as exc:
+        logger.error("voice.transcribe_video: Groq STT failed: %s", exc)
+        return None
+
+
 def transcribe_audio_url(media_url: str) -> str | None:
     """
     Download audio from a Twilio media URL and transcribe with Groq Whisper.

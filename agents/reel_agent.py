@@ -61,6 +61,11 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
         from agents import ugc_presentation_agent
         return ugc_presentation_agent.start(phone, session, intent)
 
+    # AI Video Editor (user uploads their own video to be edited)
+    if reel_type == "video_editor":
+        from agents import video_editor_agent
+        return video_editor_agent.start(phone, session, intent)
+
     if not reel_type or reel_type not in _REEL_TYPES:
         intent["_sub_step"] = "awaiting_reel_type"
         session.agent_intent = intent
@@ -215,6 +220,12 @@ def handle_step(
     if intent.get("reel_type") == "ugc_presentation":
         from agents import ugc_presentation_agent
         return ugc_presentation_agent.handle_step(
+            phone, session, clean, button_payload, media_urls, media_types, voice_confirmed)
+
+    # AI Video Editor handles all its own steps
+    if intent.get("reel_type") == "video_editor":
+        from agents import video_editor_agent
+        return video_editor_agent.handle_step(
             phone, session, clean, button_payload, media_urls, media_types, voice_confirmed)
 
     # ── Still need to know reel type ──────────────────────────────────────
