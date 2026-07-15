@@ -13,8 +13,9 @@ const DEFAULT_PROPS = {
   presenterSrc: '',
   title: '',
   cta: '',
-  broll: [] as {start: number; end: number; src: string; zoom?: string}[],
-  captions: [] as {start: number; end: number; text: string; emphasis?: boolean}[],
+  captionPos: 'bottom' as const,
+  scenes: [] as unknown[],
+  words: [] as {start: number; end: number; text: string}[],
 };
 
 export const RemotionRoot: React.FC = () => {

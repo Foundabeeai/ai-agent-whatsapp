@@ -163,10 +163,13 @@ def _plan_bg(phone: str, session: UserSession, intent: dict) -> None:
                                        folder=f"{phone}/video_editor")
         intent["_greenscreen_video_url"] = gup.get("s3_url") or matte["url"]
 
-        # 2) Transcript
+        # 2) Transcript + word-level timing (for kinetic captions)
         _send(phone, {"kind": "text", "text": "📝 Transcribing what you say..."})
-        transcript = voice.transcribe_video_url(src) or ""
+        transcript, words = voice.transcribe_video_words(src)
+        if not transcript:
+            transcript = voice.transcribe_video_url(src) or ""
         intent["_transcript"] = transcript
+        intent["_words"] = words
 
         # 3) Duration (for planning)
         duration = _video_duration_seconds(src)
@@ -200,19 +203,62 @@ def _plan_bg(phone: str, session: UserSession, intent: dict) -> None:
                       "text": f"😕 Couldn't analyze that video: {exc}\nSend a different video or type *reset*."})
 
 
+_SCENE_CYCLE = ["grid", "solid", "cardboard", "split", "solid"]
+_SOLID_COLORS = ["#E7B10A", "#7A1F2B", "#2E6E8E", "#C24914"]   # yellow, maroon, blue, orange
+
+
+def _plan_to_scenes(segments: list[dict], duration: float) -> list[dict]:
+    """
+    Turn the edit-plan segments into designed Hormozi-style scenes:
+      - backgrounds cycle grid → solid → cardboard → split
+      - grid scenes get the inward arrow ring + lens; cardboard scenes get the
+        sticker presenter + scribble circle; solid/split scenes get big-text-behind
+      - emphasis segments punch-zoom
+    """
+    scenes: list[dict] = []
+    solid_i = 0
+    for i, seg in enumerate(segments):
+        bg = _SCENE_CYCLE[i % len(_SCENE_CYCLE)]
+        emphasis = bool(seg.get("emphasis"))
+        cap = (seg.get("caption") or "").strip()
+        big_words = " ".join(cap.split()[:2]).upper() if cap else ""
+
+        scene = {
+            "start": seg["start"], "end": seg["end"],
+            "bg": bg,
+            "presenter": "sticker" if bg == "cardboard" else "full",
+            "doodle": "arrows" if bg == "grid" else ("circle" if bg == "cardboard" else "none"),
+            "lens": bg == "grid",
+            "zoom": "punch" if emphasis else "none",
+            "emphasis": emphasis,
+            "bigText": big_words if bg in ("solid", "split") else "",
+            "color": "", "color2": "",
+        }
+        if bg == "solid":
+            scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
+            solid_i += 1
+        elif bg == "split":
+            scene["color"] = "#EDE6D6"
+            scene["color2"] = "#E7B10A"
+        scenes.append(scene)
+    return scenes
+
+
 def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
     """
-    STAGE 2+3 (Remotion compositor):
-      1. generate a B-roll clip per edit-plan segment (SeedDream seed → prunaai/p-video)
-      2. turn the user's green-screen video into a TRANSPARENT WebM (green → alpha)
-      3. Remotion composites: B-roll timeline (hard cuts + Ken Burns zoom) underneath,
-         the transparent presenter on top, original audio, title card and captions.
-    Produces a single studio-grade reel and sends it for post/regenerate/skip.
+    Build the Hormozi-style talking-head reel (all in Remotion):
+      1. turn the user's green-screen video into a TRANSPARENT WebM (green → alpha)
+      2. map the edit-plan segments to designed SCENES (grid / cardboard / solid /
+         split backgrounds, big-text-behind, doodles, lens, zoom punch-ins)
+      3. Remotion renders: designed backgrounds + presenter (full / sticker) +
+         kinetic word captions + doodles + clean cut transitions + audio.
+    Produces a single production-grade reel and sends it for post/regenerate/skip.
     """
     try:
-        from tools import image_gen, remotion_render
+        from tools import remotion_render
         plan     = intent.get("_edit_plan", {}) or {}
         segments = plan.get("segments", []) or []
+        words    = intent.get("_words", []) or []
         gs_url   = intent.get("_greenscreen_video_url", "")
         src_url  = intent.get("_src_video_url", "")
         duration = float(intent.get("_duration") or 15.0)
@@ -226,31 +272,7 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             s["end"]   = max(s["start"] + 0.5, min(float(s.get("end", duration)), duration))
         segments.sort(key=lambda s: s["start"])
 
-        # 1) B-roll clip per segment
-        broll: list[dict] = []
-        total = len(segments)
-        for i, seg in enumerate(segments, 1):
-            seg_dur = max(1, int(round(seg["end"] - seg["start"])))
-            prompt  = (seg.get("broll_prompt") or "cinematic b-roll footage").strip()
-            _send(phone, {"kind": "text", "text": f"🎥 Scene {i}/{total}: {prompt[:70]}…"})
-
-            clip_url = None
-            try:
-                img = image_gen.generate_image(prompt, aspect_ratio="2:3")
-                seed_url = (img.get("s3_url") or img.get("url")) if img.get("ok") else None
-                if seed_url:
-                    vid = video_gen.generate_video_from_image(
-                        seed_url, prompt, duration=min(seg_dur, 10), aspect_ratio="9:16")
-                    if vid.get("ok") and vid.get("url"):
-                        clip_url = vid["url"]
-            except Exception as exc:
-                logger.warning("video_editor: broll scene %d failed: %s", i, exc)
-
-            if clip_url:
-                broll.append({"start": seg["start"], "end": seg["end"], "src": clip_url,
-                              "zoom": seg.get("zoom", "none"), "emphasis": bool(seg.get("emphasis"))})
-
-        # 2) Transparent presenter (green → alpha WebM)
+        # 1) Transparent presenter (green → alpha WebM)
         _send(phone, {"kind": "text", "text": "🟢 Cutting you out onto a transparent background…"})
         tr = video_gen.greenscreen_to_transparent_webm(gs_url)
         if not tr.get("ok") or not tr.get("bytes"):
@@ -259,25 +281,19 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
                                       extension="webm", folder=f"{phone}/video_editor")
         presenter_src = pu.get("s3_url") or pu.get("permanent_url")
 
-        # 3) Caption track from the plan segments
-        captions = []
-        for s in segments:
-            cap = (s.get("caption") or "").strip()
-            if cap:
-                captions.append({"start": s["start"], "end": max(s["start"] + 0.6, s["end"]),
-                                 "text": cap, "emphasis": bool(s.get("emphasis"))})
+        # 2) Map segments → designed scenes
+        scenes = _plan_to_scenes(segments, duration)
 
-        # 4) Remotion composite → final studio reel
-        _send(phone, {"kind": "text", "text": "🎬 Compositing your studio reel — cuts, zooms and captions…"})
+        # 3) Remotion render → final reel
+        _send(phone, {"kind": "text", "text": "🎬 Designing your reel — backgrounds, captions, doodles and cuts…"})
         out = remotion_render.render_reel(
             presenter_src=presenter_src,
-            broll=broll,
-            captions=captions,
+            scenes=scenes,
+            words=words,
             duration_sec=duration,
             audio_src=src_url,
             fps=24, width=1080, height=1920,
-            title=(plan.get("title") or "").strip(),
-            cta=(plan.get("cta") or "").strip(),
+            caption_pos="bottom",
         )
         if not out.get("ok") or not out.get("bytes"):
             raise RuntimeError(out.get("error") or "remotion render returned nothing")

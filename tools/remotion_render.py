@@ -33,30 +33,30 @@ def _deps_ready() -> bool:
 @traceable(run_type="tool", name="render_reel_remotion")
 def render_reel(
     presenter_src: str,
-    broll: list[dict],
-    captions: list[dict],
+    scenes: list[dict],
+    words: list[dict],
     duration_sec: float,
     audio_src: str = "",
     fps: int = 24,
     width: int = 1080,
     height: int = 1920,
-    title: str = "",
-    cta: str = "",
+    caption_pos: str = "bottom",
     timeout: int = 1200,
 ) -> dict:
     """
-    Composite the full studio reel in Remotion:
-      - B-roll timeline underneath (hard cuts + Ken Burns zoom per segment)
-      - the transparent presenter WebM on top
-      - original audio, title card, and trending captions
-    broll:    [{"start", "end", "src", "zoom"}]  (src = B-roll clip URL)
-    captions: [{"start", "end", "text", "emphasis"}]
+    Render the Hormozi-style talking-head reel in Remotion:
+      - per-scene designed backgrounds (grid / cardboard / solid / split / broll)
+      - the transparent presenter (full-bleed or sticker cutout) on top
+      - giant kinetic text behind the subject, hand-drawn doodles, lens vignette
+      - word-by-word kinetic captions, original audio, clean cut transitions
+    scenes: [{start,end,bg,color,color2,brollSrc,presenter,bigText,doodle,zoom,lens,emphasis}]
+    words:  [{start,end,text}]
     Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
     """
     if not _deps_ready():
         return {"ok": False, "error": "remotion deps not installed (run npm install in remotion/)"}
-    if not presenter_src and not broll:
-        return {"ok": False, "error": "nothing to render (no presenter and no b-roll)"}
+    if not presenter_src and not scenes:
+        return {"ok": False, "error": "nothing to render (no presenter and no scenes)"}
 
     props = {
         "fps": int(fps),
@@ -65,28 +65,28 @@ def render_reel(
         "durationInFrames": max(1, int(round(duration_sec * fps))),
         "audioSrc": audio_src or "",
         "presenterSrc": presenter_src or "",
-        "title": title or "",
-        "cta": cta or "",
-        "broll": [
+        "captionPos": caption_pos if caption_pos in ("top", "bottom") else "bottom",
+        "scenes": [
             {
-                "start": float(b.get("start", 0)),
-                "end": float(b.get("end", 0)),
-                "src": str(b.get("src", "")),
-                "zoom": str(b.get("zoom", "none")),
-                "emphasis": bool(b.get("emphasis", False)),
+                "start": float(s.get("start", 0)),
+                "end": float(s.get("end", 0)),
+                "bg": str(s.get("bg", "solid")),
+                "color": str(s.get("color", "")),
+                "color2": str(s.get("color2", "")),
+                "brollSrc": str(s.get("brollSrc", "")),
+                "presenter": str(s.get("presenter", "full")),
+                "bigText": str(s.get("bigText", "")),
+                "doodle": str(s.get("doodle", "none")),
+                "zoom": str(s.get("zoom", "none")),
+                "lens": bool(s.get("lens", False)),
+                "emphasis": bool(s.get("emphasis", False)),
             }
-            for b in (broll or [])
-            if str(b.get("src", ""))
+            for s in (scenes or [])
         ],
-        "captions": [
-            {
-                "start": float(c.get("start", 0)),
-                "end": float(c.get("end", 0)),
-                "text": str(c.get("text", "")).strip(),
-                "emphasis": bool(c.get("emphasis", False)),
-            }
-            for c in (captions or [])
-            if str(c.get("text", "")).strip()
+        "words": [
+            {"start": float(w.get("start", 0)), "end": float(w.get("end", 0)), "text": str(w.get("text", "")).strip()}
+            for w in (words or [])
+            if str(w.get("text", "")).strip()
         ],
     }
 

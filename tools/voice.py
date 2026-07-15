@@ -78,6 +78,51 @@ def transcribe_video_url(url: str) -> str | None:
         return None
 
 
+@traceable(run_type="tool", name="transcribe_video_words")
+def transcribe_video_words(url: str) -> tuple[str, list[dict]]:
+    """
+    Transcribe a video at a URL with Groq Whisper, returning word-level timestamps
+    for kinetic captions. Returns (full_text, [{"start","end","text"}, ...]).
+    Falls back to ([text], []) if word timing isn't available.
+    """
+    if not config.GROQ_API_KEY:
+        return "", []
+    try:
+        resp = requests.get(url, timeout=120)
+        resp.raise_for_status()
+        data = resp.content
+    except Exception as exc:
+        logger.error("voice.transcribe_words: download failed: %s", exc)
+        return "", []
+    try:
+        from groq import Groq
+        client = Groq(api_key=config.GROQ_API_KEY)
+        tr = client.audio.transcriptions.create(
+            file=("video.mp4", io.BytesIO(data), "video/mp4"),
+            model="whisper-large-v3-turbo",
+            response_format="verbose_json",
+            timestamp_granularities=["word"],
+            language="en",
+        )
+        text = (getattr(tr, "text", "") or "").strip()
+        words = []
+        for w in (getattr(tr, "words", None) or []):
+            # groq returns dict-like or object per word
+            ws = w.get("word") if isinstance(w, dict) else getattr(w, "word", "")
+            st = w.get("start") if isinstance(w, dict) else getattr(w, "start", 0)
+            en = w.get("end") if isinstance(w, dict) else getattr(w, "end", 0)
+            ws = (ws or "").strip()
+            if ws:
+                words.append({"start": float(st or 0), "end": float(en or 0), "text": ws})
+        logger.info("voice.transcribe_words: %d words", len(words))
+        return text, words
+    except Exception as exc:
+        logger.error("voice.transcribe_words: Groq STT failed: %s", exc)
+        # Fall back to plain text
+        txt = transcribe_video_url(url) or ""
+        return txt, []
+
+
 def transcribe_audio_url(media_url: str) -> str | None:
     """
     Download audio from a Twilio media URL and transcribe with Groq Whisper.
