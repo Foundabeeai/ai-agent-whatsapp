@@ -118,10 +118,13 @@ def handle_step(
         return {"kind": "text", "text": "Reply *approve* to build the video, or *regenerate* to re-plan."}
 
     if sub_step == "awaiting_final_ok":
-        if low in ("approve", "yes", "ok", "okay", "go", "looks good", "perfect", "publish", "continue"):
+        if low in ("approve", "yes", "ok", "okay", "go", "looks good", "perfect", "continue"):
+            intent["_sub_step"] = "captioning"
+            session.agent_intent = intent
+            save_session(session)
             _send(phone, {"kind": "text",
-                          "text": "🎉 Locked in! Captions, overlays and the final trending polish are the next "
-                                  "stage (Remotion) — coming online soon. Your edited base video is saved."})
+                          "text": "✨ Adding punchy captions and a title card now (Remotion)…\n⏱ ~2-3 min ☕"})
+            threading.Thread(target=_caption_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
         if "regenerate" in low or "again" in low or "redo" in low or "rebuild" in low:
             intent["_sub_step"] = "building"
@@ -130,7 +133,24 @@ def handle_step(
             _send(phone, {"kind": "text", "text": "🔁 Rebuilding your edit with fresh B-roll…"})
             threading.Thread(target=_build_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
-        return {"kind": "text", "text": "Reply *approve* to keep this cut, or *regenerate* to rebuild the B-roll."}
+        return {"kind": "text", "text": "Reply *approve* to add captions, or *regenerate* to rebuild the B-roll."}
+
+    if sub_step == "captioning":
+        return {"kind": "text", "text": "⏳ Rendering captions — hang tight, almost there!"}
+
+    if sub_step == "awaiting_publish":
+        if "regenerate" in low or "again" in low or "redo" in low:
+            intent["_sub_step"] = "captioning"
+            session.agent_intent = intent
+            save_session(session)
+            _send(phone, {"kind": "text", "text": "🔁 Re-rendering the captioned cut…"})
+            threading.Thread(target=_caption_bg, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "none"}
+        if low in ("approve", "yes", "ok", "okay", "perfect", "love it", "done", "great"):
+            return {"kind": "text",
+                    "text": "🎉 Awesome! Your final trending cut is saved. Publishing to Instagram is the next "
+                            "stage — coming online soon."}
+        return {"kind": "text", "text": "Reply *approve* if you love it, or *regenerate* to re-render captions."}
 
     return start(phone, session, intent)
 
@@ -262,6 +282,69 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
         save_session(session)
         _send(phone, {"kind": "text",
                       "text": f"😕 Couldn't build the edit: {exc}\nReply *approve* to try again or *regenerate* to re-plan."})
+
+
+def _caption_bg(phone: str, session: UserSession, intent: dict) -> None:
+    """
+    STAGE 3: render trending captions + title card over the Stage 2 base cut
+    using the Node/Remotion project, then send the final trending cut for review.
+    """
+    try:
+        from tools import remotion_render
+        plan     = intent.get("_edit_plan", {}) or {}
+        base_url = intent.get("_edited_video_url", "")
+        duration = float(intent.get("_duration") or 15.0)
+        if not base_url:
+            raise RuntimeError("no base cut to caption")
+
+        # Caption track from the edit-plan segments (already timed + emphasis flags)
+        captions = []
+        for s in plan.get("segments", []) or []:
+            cap = (s.get("caption") or "").strip()
+            if not cap:
+                continue
+            captions.append({
+                "start": max(0.0, float(s.get("start", 0))),
+                "end":   max(float(s.get("start", 0)) + 0.6, float(s.get("end", duration))),
+                "text":  cap,
+                "emphasis": bool(s.get("emphasis")),
+            })
+
+        out = remotion_render.render_captions(
+            video_src=base_url,
+            captions=captions,
+            duration_sec=duration,
+            fps=24, width=1080, height=1920,
+            title=(plan.get("title") or "").strip(),
+            cta=(plan.get("cta") or "").strip(),
+        )
+        if not out.get("ok") or not out.get("bytes"):
+            raise RuntimeError(out.get("error") or "remotion render returned nothing")
+
+        up = aws_storage.upload_bytes(out["bytes"], content_type="video/mp4",
+                                      extension="mp4", folder=f"{phone}/video_editor")
+        final_url = up.get("s3_url") or up.get("permanent_url")
+        intent["_final_video_url"] = final_url
+        intent["_sub_step"] = "awaiting_publish"
+        session.agent_intent = intent
+        save_session(session)
+
+        _send(phone, {"kind": "media", "media_url": final_url,
+                      "text": "🎬 Your trending cut is ready — B-roll, chroma-key, zoom cuts and captions!\n\n"
+                              "Reply *approve* if you love it, or *regenerate* to re-render the captions."})
+    except Exception as exc:
+        logger.exception("video_editor _caption_bg failed: %s", exc)
+        intent["_sub_step"] = "awaiting_final_ok"
+        session.agent_intent = intent
+        save_session(session)
+        # Fall back to the un-captioned base cut so the user still has a usable video.
+        base_url = intent.get("_edited_video_url")
+        if base_url:
+            _send(phone, {"kind": "media", "media_url": base_url,
+                          "text": f"⚠️ Caption render hit a snag ({exc}). Here's your edit without captions.\n"
+                                  "Reply *approve* to retry captions or *regenerate* to rebuild."})
+        else:
+            _send(phone, {"kind": "text", "text": f"😕 Caption render failed: {exc}\nReply *approve* to retry."})
 
 
 def _video_duration_seconds(url: str) -> float:
