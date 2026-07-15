@@ -835,10 +835,13 @@ def greenscreen_to_transparent_webm(video_url: str) -> dict:
             f.write(_req.get(video_url, timeout=180).content)
 
         # chromakey keys out green in YUV (cleaner edges than colorkey); format=yuva420p
-        # carries the alpha channel that libvpx-vp9 preserves.
-        vf = "chromakey=0x00B140:0.18:0.10,format=yuva420p"
+        # carries the alpha channel. -auto-alt-ref 0 is REQUIRED for libvpx-vp9 alpha —
+        # without it the whole frame decodes at ~50% opacity (ghosted presenter).
+        # Low blend (0.01) keeps the subject fully opaque; only green goes transparent.
+        vf = "chromakey=0x00B140:0.16:0.01,format=yuva420p"
         cmd = ["ffmpeg", "-y", "-i", src, "-vf", vf,
-               "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "3M",
+               "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+               "-auto-alt-ref", "0", "-crf", "18", "-b:v", "0",
                "-an", out]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if proc.returncode != 0 or not _os.path.exists(out):
