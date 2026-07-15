@@ -818,6 +818,33 @@ def _cover_9x16(img_bytes: bytes, size=(1080, 1920)):
     return _np.array(im)
 
 
+def compress_for_whatsapp(video_bytes: bytes, target_mb: float = 14.0) -> bytes | None:
+    """Re-encode an MP4 down toward `target_mb` so WhatsApp (16 MB cap) accepts it."""
+    try:
+        import tempfile, os as _os, subprocess
+        tmp = tempfile.mkdtemp()
+        src = _os.path.join(tmp, "in.mp4")
+        out = _os.path.join(tmp, "out.mp4")
+        with open(src, "wb") as f:
+            f.write(video_bytes)
+        # CRF 28 + 720p downscale is a safe, fast size cut that stays watchable.
+        cmd = ["ffmpeg", "-y", "-i", src,
+               "-vf", "scale='min(720,iw)':-2",
+               "-c:v", "libx264", "-crf", "28", "-preset", "veryfast",
+               "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0 or not _os.path.exists(out):
+            logger.warning("compress_for_whatsapp failed: %s", (proc.stderr or "")[-300:])
+            return None
+        with open(out, "rb") as f:
+            data = f.read()
+        import shutil; shutil.rmtree(tmp, ignore_errors=True)
+        return data
+    except Exception as exc:
+        logger.warning("compress_for_whatsapp error: %s", exc)
+        return None
+
+
 @traceable(run_type="tool", name="greenscreen_to_transparent_webm")
 def greenscreen_to_transparent_webm(video_url: str) -> dict:
     """

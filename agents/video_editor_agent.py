@@ -282,18 +282,31 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
         if not out.get("ok") or not out.get("bytes"):
             raise RuntimeError(out.get("error") or "remotion render returned nothing")
 
-        up = aws_storage.upload_bytes(out["bytes"], content_type="video/mp4",
+        final_bytes = out["bytes"]
+        logger.info("video_editor: final reel %.1f MB", len(final_bytes) / 1e6)
+        # WhatsApp media cap is 16 MB — compress if we're over so it actually sends.
+        if len(final_bytes) > 15 * 1024 * 1024:
+            _send(phone, {"kind": "text", "text": "📦 Compressing for WhatsApp…"})
+            final_bytes = video_gen.compress_for_whatsapp(final_bytes) or final_bytes
+            logger.info("video_editor: compressed reel %.1f MB", len(final_bytes) / 1e6)
+
+        up = aws_storage.upload_bytes(final_bytes, content_type="video/mp4",
                                       extension="mp4", folder=f"{phone}/video_editor")
         final_url = up.get("s3_url") or up.get("permanent_url")
+        if not final_url:
+            raise RuntimeError(f"S3 upload failed: {up.get('error')}")
         intent["_final_video_url"] = final_url
         intent["_sub_step"] = "awaiting_publish"
         session.agent_intent = intent
         save_session(session)
 
+        # Deliver the video; always follow with the link as text so nothing is lost
+        # even if Twilio rejects the media (size/type).
         _send(phone, {"kind": "media", "media_url": final_url,
                       "text": "🎬 Your studio reel is ready — you cut out over dynamic B-roll with cuts, zooms and captions!"})
         _send(phone, {"kind": "text",
-                      "text": "Reply:\n✅ *post now* — publish to Instagram\n🔄 *regenerate* — rebuild the reel\n"
+                      "text": f"🔗 Direct link (if the video didn't load): {final_url}\n\n"
+                              "Reply:\n✅ *post now* — publish to Instagram\n🔄 *regenerate* — rebuild the reel\n"
                               "⏭ *skip* — save as draft"})
     except Exception as exc:
         logger.exception("video_editor _build_bg failed: %s", exc)
