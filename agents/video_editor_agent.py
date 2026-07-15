@@ -146,11 +146,23 @@ def handle_step(
             _send(phone, {"kind": "text", "text": "🔁 Re-rendering the captioned cut…"})
             threading.Thread(target=_caption_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
-        if low in ("approve", "yes", "ok", "okay", "perfect", "love it", "done", "great"):
-            return {"kind": "text",
-                    "text": "🎉 Awesome! Your final trending cut is saved. Publishing to Instagram is the next "
-                            "stage — coming online soon."}
-        return {"kind": "text", "text": "Reply *approve* if you love it, or *regenerate* to re-render captions."}
+        if low in ("skip", "later", "draft", "no"):
+            session.step = STEP_CHOOSE_CONTENT_TYPE
+            session.agent_intent = None
+            save_session(session)
+            return {"kind": "text", "text": "👍 Saved as a draft. Type *create* whenever you want to make more."}
+        if low in ("approve", "yes", "ok", "okay", "perfect", "love it", "done", "great",
+                   "post", "post now", "publish", "go"):
+            intent["_sub_step"] = "publishing"
+            session.agent_intent = intent
+            save_session(session)
+            threading.Thread(target=_publish_bg, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "text", "text": "📤 Publishing your reel to Instagram…"}
+        return {"kind": "text",
+                "text": "Reply *post now* to publish to Instagram, *regenerate* to re-render captions, or *skip* to save as draft."}
+
+    if sub_step == "publishing":
+        return {"kind": "text", "text": "⏳ Publishing in progress — one moment!"}
 
     return start(phone, session, intent)
 
@@ -330,8 +342,10 @@ def _caption_bg(phone: str, session: UserSession, intent: dict) -> None:
         save_session(session)
 
         _send(phone, {"kind": "media", "media_url": final_url,
-                      "text": "🎬 Your trending cut is ready — B-roll, chroma-key, zoom cuts and captions!\n\n"
-                              "Reply *approve* if you love it, or *regenerate* to re-render the captions."})
+                      "text": "🎬 Your trending cut is ready — B-roll, chroma-key, zoom cuts and captions!"})
+        _send(phone, {"kind": "text",
+                      "text": "Reply:\n✅ *post now* — publish to Instagram\n🔄 *regenerate* — re-render captions\n"
+                              "⏭ *skip* — save as draft"})
     except Exception as exc:
         logger.exception("video_editor _caption_bg failed: %s", exc)
         intent["_sub_step"] = "awaiting_final_ok"
@@ -345,6 +359,47 @@ def _caption_bg(phone: str, session: UserSession, intent: dict) -> None:
                                   "Reply *approve* to retry captions or *regenerate* to rebuild."})
         else:
             _send(phone, {"kind": "text", "text": f"😕 Caption render failed: {exc}\nReply *approve* to retry."})
+
+
+def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:
+    """STAGE 4: publish the final trending cut to Instagram via Zerini."""
+    import db
+    from tools import zerini
+    try:
+        plan      = intent.get("_edit_plan", {}) or {}
+        final_url = intent.get("_final_video_url", "")
+        if not final_url:
+            raise RuntimeError("no final video to publish")
+
+        # Caption: the plan's story + CTA, or fall back to the transcript.
+        caption = "\n\n".join(p for p in [
+            (plan.get("story") or "").strip(),
+            (plan.get("cta") or "").strip(),
+        ] if p) or (intent.get("_transcript") or "").strip()[:500]
+
+        result = zerini.publish_now(
+            account_id=session.zerini_account_id or "",
+            image_urls=[final_url],
+            caption=caption,
+            content_type="reel",
+            profile_id=session.zerini_profile_id or "",
+        )
+        db.log_post(phone_number=phone, content_type="reel", image_urls=[final_url],
+                    caption=caption, prompts=[], status="published" if result.get("ok") else "failed")
+
+        session.step = STEP_CHOOSE_CONTENT_TYPE
+        session.agent_intent = None
+        save_session(session)
+        if result.get("ok"):
+            _send(phone, {"kind": "text", "text": "✅ *Posted to Instagram!* 🎉 What would you like to create next?"}, tts=True)
+        else:
+            _send(phone, {"kind": "text", "text": f"😕 Publish failed: {result.get('error')}\nYour video is saved — try again anytime."})
+    except Exception as exc:
+        logger.exception("video_editor _publish_bg failed: %s", exc)
+        intent["_sub_step"] = "awaiting_publish"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text", "text": f"😕 Publish failed: {exc}\nReply *post now* to try again or *skip* to save as draft."})
 
 
 def _video_duration_seconds(url: str) -> float:
