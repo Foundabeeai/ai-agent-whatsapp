@@ -117,34 +117,13 @@ def handle_step(
             return {"kind": "none"}
         return {"kind": "text", "text": "Reply *approve* to build the video, or *regenerate* to re-plan."}
 
-    if sub_step == "awaiting_final_ok":
-        if low in ("approve", "yes", "ok", "okay", "go", "looks good", "perfect", "continue"):
-            intent["_sub_step"] = "captioning"
-            session.agent_intent = intent
-            save_session(session)
-            _send(phone, {"kind": "text",
-                          "text": "✨ Adding punchy captions and a title card now (Remotion)…\n⏱ ~2-3 min ☕"})
-            threading.Thread(target=_caption_bg, args=(phone, session, intent), daemon=True).start()
-            return {"kind": "none"}
+    if sub_step == "awaiting_publish":
         if "regenerate" in low or "again" in low or "redo" in low or "rebuild" in low:
             intent["_sub_step"] = "building"
             session.agent_intent = intent
             save_session(session)
-            _send(phone, {"kind": "text", "text": "🔁 Rebuilding your edit with fresh B-roll…"})
+            _send(phone, {"kind": "text", "text": "🔁 Rebuilding your reel with fresh B-roll…"})
             threading.Thread(target=_build_bg, args=(phone, session, intent), daemon=True).start()
-            return {"kind": "none"}
-        return {"kind": "text", "text": "Reply *approve* to add captions, or *regenerate* to rebuild the B-roll."}
-
-    if sub_step == "captioning":
-        return {"kind": "text", "text": "⏳ Rendering captions — hang tight, almost there!"}
-
-    if sub_step == "awaiting_publish":
-        if "regenerate" in low or "again" in low or "redo" in low:
-            intent["_sub_step"] = "captioning"
-            session.agent_intent = intent
-            save_session(session)
-            _send(phone, {"kind": "text", "text": "🔁 Re-rendering the captioned cut…"})
-            threading.Thread(target=_caption_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
         if low in ("skip", "later", "draft", "no"):
             session.step = STEP_CHOOSE_CONTENT_TYPE
@@ -159,7 +138,7 @@ def handle_step(
             threading.Thread(target=_publish_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "text", "text": "📤 Publishing your reel to Instagram…"}
         return {"kind": "text",
-                "text": "Reply *post now* to publish to Instagram, *regenerate* to re-render captions, or *skip* to save as draft."}
+                "text": "Reply *post now* to publish to Instagram, *regenerate* to rebuild the reel, or *skip* to save as draft."}
 
     if sub_step == "publishing":
         return {"kind": "text", "text": "⏳ Publishing in progress — one moment!"}
@@ -223,18 +202,20 @@ def _plan_bg(phone: str, session: UserSession, intent: dict) -> None:
 
 def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
     """
-    STAGE 2: for each edit-plan segment, generate a B-roll clip (SeedDream seed image
-    → prunaai/p-video), then chroma-key the user's green-screen video over the B-roll
-    timeline with per-segment zoom. Sends the composited video back for review.
+    STAGE 2+3 (Remotion compositor):
+      1. generate a B-roll clip per edit-plan segment (SeedDream seed → prunaai/p-video)
+      2. turn the user's green-screen video into a TRANSPARENT WebM (green → alpha)
+      3. Remotion composites: B-roll timeline (hard cuts + Ken Burns zoom) underneath,
+         the transparent presenter on top, original audio, title card and captions.
+    Produces a single studio-grade reel and sends it for post/regenerate/skip.
     """
     try:
-        from tools import image_gen
+        from tools import image_gen, remotion_render
         plan     = intent.get("_edit_plan", {}) or {}
         segments = plan.get("segments", []) or []
         gs_url   = intent.get("_greenscreen_video_url", "")
         src_url  = intent.get("_src_video_url", "")
         duration = float(intent.get("_duration") or 15.0)
-        user_id  = session.verified_user_id or phone
 
         if not gs_url or not segments:
             raise RuntimeError("missing green-screen video or edit plan")
@@ -245,6 +226,7 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             s["end"]   = max(s["start"] + 0.5, min(float(s.get("end", duration)), duration))
         segments.sort(key=lambda s: s["start"])
 
+        # 1) B-roll clip per segment
         broll: list[dict] = []
         total = len(segments)
         for i, seg in enumerate(segments, 1):
@@ -255,7 +237,7 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             clip_url = None
             try:
                 img = image_gen.generate_image(prompt, aspect_ratio="2:3")
-                seed_url = img.get("s3_url") or img.get("url") if img.get("ok") else None
+                seed_url = (img.get("s3_url") or img.get("url")) if img.get("ok") else None
                 if seed_url:
                     vid = video_gen.generate_video_from_image(
                         seed_url, prompt, duration=min(seg_dur, 10), aspect_ratio="9:16")
@@ -264,68 +246,35 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             except Exception as exc:
                 logger.warning("video_editor: broll scene %d failed: %s", i, exc)
 
-            broll.append({"start": seg["start"], "end": seg["end"],
-                          "url": clip_url, "zoom": seg.get("zoom", "none")})
+            if clip_url:
+                broll.append({"start": seg["start"], "end": seg["end"],
+                              "src": clip_url, "zoom": seg.get("zoom", "none")})
 
-        # Drop segments whose B-roll failed (compositor uses dark filler for missing urls)
-        broll = [b for b in broll if b.get("url")] or broll
+        # 2) Transparent presenter (green → alpha WebM)
+        _send(phone, {"kind": "text", "text": "🟢 Cutting you out onto a transparent background…"})
+        tr = video_gen.greenscreen_to_transparent_webm(gs_url)
+        if not tr.get("ok") or not tr.get("bytes"):
+            raise RuntimeError(f"transparency failed: {tr.get('error')}")
+        pu = aws_storage.upload_bytes(tr["bytes"], content_type="video/webm",
+                                      extension="webm", folder=f"{phone}/video_editor")
+        presenter_src = pu.get("s3_url") or pu.get("permanent_url")
 
-        _send(phone, {"kind": "text", "text": "🧩 Compositing you over the B-roll…"})
-        comp = video_gen.compose_editor_video(gs_url, src_url or gs_url, broll)
-        if not comp.get("ok") or not comp.get("bytes"):
-            raise RuntimeError(f"composite failed: {comp.get('error')}")
-
-        up = aws_storage.upload_bytes(comp["bytes"], content_type="video/mp4",
-                                      extension="mp4", folder=f"{phone}/video_editor")
-        final_url = up.get("s3_url") or up.get("permanent_url")
-        intent["_edited_video_url"] = final_url
-        intent["_sub_step"] = "awaiting_final_ok"
-        session.agent_intent = intent
-        save_session(session)
-
-        _send(phone, {"kind": "media", "media_url": final_url,
-                      "text": "🎬 Here's your edited cut — you over AI B-roll with zoom effects!\n\n"
-                              "Next I'll add punchy captions & overlays. Reply *approve* if you like the base, "
-                              "or *regenerate* to rebuild the B-roll."})
-    except Exception as exc:
-        logger.exception("video_editor _build_bg failed: %s", exc)
-        intent["_sub_step"] = "awaiting_plan_ok"
-        session.agent_intent = intent
-        save_session(session)
-        _send(phone, {"kind": "text",
-                      "text": f"😕 Couldn't build the edit: {exc}\nReply *approve* to try again or *regenerate* to re-plan."})
-
-
-def _caption_bg(phone: str, session: UserSession, intent: dict) -> None:
-    """
-    STAGE 3: render trending captions + title card over the Stage 2 base cut
-    using the Node/Remotion project, then send the final trending cut for review.
-    """
-    try:
-        from tools import remotion_render
-        plan     = intent.get("_edit_plan", {}) or {}
-        base_url = intent.get("_edited_video_url", "")
-        duration = float(intent.get("_duration") or 15.0)
-        if not base_url:
-            raise RuntimeError("no base cut to caption")
-
-        # Caption track from the edit-plan segments (already timed + emphasis flags)
+        # 3) Caption track from the plan segments
         captions = []
-        for s in plan.get("segments", []) or []:
+        for s in segments:
             cap = (s.get("caption") or "").strip()
-            if not cap:
-                continue
-            captions.append({
-                "start": max(0.0, float(s.get("start", 0))),
-                "end":   max(float(s.get("start", 0)) + 0.6, float(s.get("end", duration))),
-                "text":  cap,
-                "emphasis": bool(s.get("emphasis")),
-            })
+            if cap:
+                captions.append({"start": s["start"], "end": max(s["start"] + 0.6, s["end"]),
+                                 "text": cap, "emphasis": bool(s.get("emphasis"))})
 
-        out = remotion_render.render_captions(
-            video_src=base_url,
+        # 4) Remotion composite → final studio reel
+        _send(phone, {"kind": "text", "text": "🎬 Compositing your studio reel — cuts, zooms and captions…"})
+        out = remotion_render.render_reel(
+            presenter_src=presenter_src,
+            broll=broll,
             captions=captions,
             duration_sec=duration,
+            audio_src=src_url,
             fps=24, width=1080, height=1920,
             title=(plan.get("title") or "").strip(),
             cta=(plan.get("cta") or "").strip(),
@@ -342,23 +291,17 @@ def _caption_bg(phone: str, session: UserSession, intent: dict) -> None:
         save_session(session)
 
         _send(phone, {"kind": "media", "media_url": final_url,
-                      "text": "🎬 Your trending cut is ready — B-roll, chroma-key, zoom cuts and captions!"})
+                      "text": "🎬 Your studio reel is ready — you cut out over dynamic B-roll with cuts, zooms and captions!"})
         _send(phone, {"kind": "text",
-                      "text": "Reply:\n✅ *post now* — publish to Instagram\n🔄 *regenerate* — re-render captions\n"
+                      "text": "Reply:\n✅ *post now* — publish to Instagram\n🔄 *regenerate* — rebuild the reel\n"
                               "⏭ *skip* — save as draft"})
     except Exception as exc:
-        logger.exception("video_editor _caption_bg failed: %s", exc)
-        intent["_sub_step"] = "awaiting_final_ok"
+        logger.exception("video_editor _build_bg failed: %s", exc)
+        intent["_sub_step"] = "awaiting_plan_ok"
         session.agent_intent = intent
         save_session(session)
-        # Fall back to the un-captioned base cut so the user still has a usable video.
-        base_url = intent.get("_edited_video_url")
-        if base_url:
-            _send(phone, {"kind": "media", "media_url": base_url,
-                          "text": f"⚠️ Caption render hit a snag ({exc}). Here's your edit without captions.\n"
-                                  "Reply *approve* to retry captions or *regenerate* to rebuild."})
-        else:
-            _send(phone, {"kind": "text", "text": f"😕 Caption render failed: {exc}\nReply *approve* to retry."})
+        _send(phone, {"kind": "text",
+                      "text": f"😕 Couldn't build the reel: {exc}\nReply *approve* to try again or *regenerate* to re-plan."})
 
 
 def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:

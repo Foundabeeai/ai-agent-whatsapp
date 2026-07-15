@@ -818,6 +818,40 @@ def _cover_9x16(img_bytes: bytes, size=(1080, 1920)):
     return _np.array(im)
 
 
+@traceable(run_type="tool", name="greenscreen_to_transparent_webm")
+def greenscreen_to_transparent_webm(video_url: str) -> dict:
+    """
+    Turn a green-screen video into a transparent-background VP9 WebM (alpha channel),
+    so Remotion can composite the presenter on top of B-roll with a see-through
+    background. Video only (no audio — the original audio is added back in Remotion).
+    Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
+    """
+    try:
+        import tempfile, os as _os, subprocess, requests as _req
+        tmp = tempfile.mkdtemp()
+        src = _os.path.join(tmp, "gs.mp4")
+        out = _os.path.join(tmp, "presenter.webm")
+        with open(src, "wb") as f:
+            f.write(_req.get(video_url, timeout=180).content)
+
+        # chromakey keys out green in YUV (cleaner edges than colorkey); format=yuva420p
+        # carries the alpha channel that libvpx-vp9 preserves.
+        vf = "chromakey=0x00B140:0.18:0.10,format=yuva420p"
+        cmd = ["ffmpeg", "-y", "-i", src, "-vf", vf,
+               "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "3M",
+               "-an", out]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0 or not _os.path.exists(out):
+            return {"ok": False, "error": (proc.stderr or "")[-400:]}
+        with open(out, "rb") as f:
+            data = f.read()
+        import shutil; shutil.rmtree(tmp, ignore_errors=True)
+        return {"ok": True, "bytes": data}
+    except Exception as exc:
+        logger.error("greenscreen_to_transparent_webm failed: %s", exc, exc_info=True)
+        return {"ok": False, "error": str(exc)}
+
+
 @traceable(run_type="tool", name="compose_editor_video")
 def compose_editor_video(
     greenscreen_url: str,

@@ -30,36 +30,53 @@ def _deps_ready() -> bool:
     return os.path.isdir(os.path.join(_REMOTION_DIR, "node_modules", "remotion"))
 
 
-@traceable(run_type="tool", name="render_captions_remotion")
-def render_captions(
-    video_src: str,
+@traceable(run_type="tool", name="render_reel_remotion")
+def render_reel(
+    presenter_src: str,
+    broll: list[dict],
     captions: list[dict],
     duration_sec: float,
+    audio_src: str = "",
     fps: int = 24,
     width: int = 1080,
     height: int = 1920,
     title: str = "",
     cta: str = "",
-    timeout: int = 900,
+    timeout: int = 1200,
 ) -> dict:
     """
-    Render captions/title over `video_src` (a URL or local path Remotion can load).
-    captions: [{"start": float, "end": float, "text": str, "emphasis": bool}]
+    Composite the full studio reel in Remotion:
+      - B-roll timeline underneath (hard cuts + Ken Burns zoom per segment)
+      - the transparent presenter WebM on top
+      - original audio, title card, and trending captions
+    broll:    [{"start", "end", "src", "zoom"}]  (src = B-roll clip URL)
+    captions: [{"start", "end", "text", "emphasis"}]
     Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
     """
     if not _deps_ready():
         return {"ok": False, "error": "remotion deps not installed (run npm install in remotion/)"}
-    if not video_src:
-        return {"ok": False, "error": "no video_src"}
+    if not presenter_src and not broll:
+        return {"ok": False, "error": "nothing to render (no presenter and no b-roll)"}
 
     props = {
-        "videoSrc": video_src,
         "fps": int(fps),
         "width": int(width),
         "height": int(height),
         "durationInFrames": max(1, int(round(duration_sec * fps))),
+        "audioSrc": audio_src or "",
+        "presenterSrc": presenter_src or "",
         "title": title or "",
         "cta": cta or "",
+        "broll": [
+            {
+                "start": float(b.get("start", 0)),
+                "end": float(b.get("end", 0)),
+                "src": str(b.get("src", "")),
+                "zoom": str(b.get("zoom", "none")),
+            }
+            for b in (broll or [])
+            if str(b.get("src", ""))
+        ],
         "captions": [
             {
                 "start": float(c.get("start", 0)),

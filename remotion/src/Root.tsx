@@ -5,14 +5,16 @@ import {CaptionedVideo, captionedVideoSchema} from './CaptionedVideo';
 // The Python render layer passes real props via --props (JSON). These defaults
 // only matter for the Remotion Studio preview.
 const DEFAULT_PROPS = {
-  videoSrc: '',
   fps: 24,
   width: 1080,
   height: 1920,
   durationInFrames: 360,
-  captions: [] as {start: number; end: number; text: string; emphasis?: boolean}[],
+  audioSrc: '',
+  presenterSrc: '',
   title: '',
   cta: '',
+  broll: [] as {start: number; end: number; src: string; zoom?: string}[],
+  captions: [] as {start: number; end: number; text: string; emphasis?: boolean}[],
 };
 
 export const RemotionRoot: React.FC = () => {
