@@ -845,30 +845,28 @@ def compress_for_whatsapp(video_bytes: bytes, target_mb: float = 14.0) -> bytes 
         return None
 
 
-@traceable(run_type="tool", name="greenscreen_to_transparent_webm")
-def greenscreen_to_transparent_webm(video_url: str) -> dict:
+@traceable(run_type="tool", name="greenscreen_to_transparent_video")
+def greenscreen_to_transparent_video(video_url: str) -> dict:
     """
-    Turn a green-screen video into a transparent-background VP9 WebM (alpha channel),
-    so Remotion can composite the presenter on top of B-roll with a see-through
-    background. Video only (no audio — the original audio is added back in Remotion).
-    Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
+    Turn a green-screen video into a transparent-background ProRes 4444 MOV (alpha).
+    ProRes alpha is decoded reliably by every ffmpeg build — unlike VP9/VP8 WebM
+    alpha, which Remotion's server ffmpeg could not extract (the render hung on a
+    blob <Img> delayRender). Video only; the original audio is re-added in Remotion.
+    Returns {"ok": True, "bytes": b"...", "ext": "mov", "content_type": "video/quicktime"}.
     """
     try:
         import tempfile, os as _os, subprocess, requests as _req
         tmp = tempfile.mkdtemp()
         src = _os.path.join(tmp, "gs.mp4")
-        out = _os.path.join(tmp, "presenter.webm")
+        out = _os.path.join(tmp, "presenter.mov")
         with open(src, "wb") as f:
             f.write(_req.get(video_url, timeout=180).content)
 
-        # chromakey keys out green in YUV (cleaner edges than colorkey); format=yuva420p
-        # carries the alpha channel. -auto-alt-ref 0 is REQUIRED for libvpx-vp9 alpha —
-        # without it the whole frame decodes at ~50% opacity (ghosted presenter).
-        # Low blend (0.01) keeps the subject fully opaque; only green goes transparent.
-        vf = "chromakey=0x00B140:0.16:0.01,format=yuva420p"
+        # chromakey keys out green in YUV; low blend (0.01) keeps the subject fully
+        # opaque so only green becomes transparent. ProRes 4444 carries the alpha.
+        vf = "chromakey=0x00B140:0.16:0.01,format=yuva444p10le"
         cmd = ["ffmpeg", "-y", "-i", src, "-vf", vf,
-               "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
-               "-auto-alt-ref", "0", "-crf", "18", "-b:v", "0",
+               "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
                "-an", out]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if proc.returncode != 0 or not _os.path.exists(out):
@@ -876,9 +874,9 @@ def greenscreen_to_transparent_webm(video_url: str) -> dict:
         with open(out, "rb") as f:
             data = f.read()
         import shutil; shutil.rmtree(tmp, ignore_errors=True)
-        return {"ok": True, "bytes": data}
+        return {"ok": True, "bytes": data, "ext": "mov", "content_type": "video/quicktime"}
     except Exception as exc:
-        logger.error("greenscreen_to_transparent_webm failed: %s", exc, exc_info=True)
+        logger.error("greenscreen_to_transparent_video failed: %s", exc, exc_info=True)
         return {"ok": False, "error": str(exc)}
 
 

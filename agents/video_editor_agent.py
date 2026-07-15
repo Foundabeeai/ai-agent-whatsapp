@@ -272,13 +272,13 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             s["end"]   = max(s["start"] + 0.5, min(float(s.get("end", duration)), duration))
         segments.sort(key=lambda s: s["start"])
 
-        # 1) Transparent presenter (green → alpha WebM)
+        # 1) Transparent presenter (green → alpha ProRes 4444 MOV)
         _send(phone, {"kind": "text", "text": "🟢 Cutting you out onto a transparent background…"})
-        tr = video_gen.greenscreen_to_transparent_webm(gs_url)
+        tr = video_gen.greenscreen_to_transparent_video(gs_url)
         if not tr.get("ok") or not tr.get("bytes"):
             raise RuntimeError(f"transparency failed: {tr.get('error')}")
-        pu = aws_storage.upload_bytes(tr["bytes"], content_type="video/webm",
-                                      extension="webm", folder=f"{phone}/video_editor")
+        pu = aws_storage.upload_bytes(tr["bytes"], content_type=tr.get("content_type", "video/quicktime"),
+                                      extension=tr.get("ext", "mov"), folder=f"{phone}/video_editor")
         presenter_src = pu.get("s3_url") or pu.get("permanent_url")
 
         # 2) Map segments → designed scenes
