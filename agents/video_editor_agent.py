@@ -247,8 +247,8 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
                 logger.warning("video_editor: broll scene %d failed: %s", i, exc)
 
             if clip_url:
-                broll.append({"start": seg["start"], "end": seg["end"],
-                              "src": clip_url, "zoom": seg.get("zoom", "none")})
+                broll.append({"start": seg["start"], "end": seg["end"], "src": clip_url,
+                              "zoom": seg.get("zoom", "none"), "emphasis": bool(seg.get("emphasis"))})
 
         # 2) Transparent presenter (green → alpha WebM)
         _send(phone, {"kind": "text", "text": "🟢 Cutting you out onto a transparent background…"})

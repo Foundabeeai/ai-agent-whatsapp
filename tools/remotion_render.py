@@ -73,6 +73,7 @@ def render_reel(
                 "end": float(b.get("end", 0)),
                 "src": str(b.get("src", "")),
                 "zoom": str(b.get("zoom", "none")),
+                "emphasis": bool(b.get("emphasis", False)),
             }
             for b in (broll or [])
             if str(b.get("src", ""))
