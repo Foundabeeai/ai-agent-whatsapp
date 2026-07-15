@@ -200,18 +200,22 @@ def _friendly_time(dt: datetime, user_timezone: str | None) -> str:
 # Voice helpers
 # ---------------------------------------------------------------------------
 
+def _mt_is_audio(mt: str) -> bool:
+    """True for a WhatsApp voice/audio type — but NEVER for video (video/mp4 contains 'mp4')."""
+    if not mt or mt.startswith("video/") or mt.startswith("image/"):
+        return False
+    return (mt.startswith("audio/") or "ogg" in mt or "mpeg" in mt or "mp4" in mt or "3gpp" in mt)
+
+
 def _is_audio_media(media_types: list[str]) -> bool:
     """Return True if any media item is an audio type (WhatsApp voice message)."""
-    return any(
-        mt.startswith("audio/") or "ogg" in mt or "mpeg" in mt or "mp4" in mt or "3gpp" in mt
-        for mt in (media_types or [])
-    )
+    return any(_mt_is_audio(mt) for mt in (media_types or []))
 
 
 def _first_audio_url(media_urls: list[str], media_types: list[str]) -> str | None:
     """Return the URL of the first audio media item."""
     for url, mt in zip(media_urls or [], media_types or []):
-        if mt.startswith("audio/") or "ogg" in mt or "mpeg" in mt or "mp4" in mt or "3gpp" in mt:
+        if _mt_is_audio(mt):
             return url
     return None
 
