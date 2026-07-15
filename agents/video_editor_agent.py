@@ -96,13 +96,18 @@ def handle_step(
     if sub_step == "planning":
         return {"kind": "text", "text": "⏳ Still analyzing your video — hang tight!"}
 
+    if sub_step == "building":
+        return {"kind": "text", "text": "⏳ Still building your edit — B-roll takes a few minutes. I'll send it when ready!"}
+
     if sub_step == "awaiting_plan_ok":
         if low in ("approve", "yes", "ok", "okay", "go", "looks good", "perfect", "make it", "continue"):
+            intent["_sub_step"] = "building"
+            session.agent_intent = intent
+            save_session(session)
             _send(phone, {"kind": "text",
-                          "text": "🎬 Great! Building the full edit next — B-roll, chromakey composite, "
-                                  "captions and effects. (This stage is coming online — your green-screen "
-                                  "video, transcript and edit plan are ready.)"})
-            # STAGE 2+ hook: B-roll → chromakey → Remotion captions/overlays → render → publish
+                          "text": "🎬 Building your edit! Generating B-roll for each scene and compositing "
+                                  "you over it with zoom cuts.\n⏱ This takes a few minutes — I'll send it when it's ready ☕"})
+            threading.Thread(target=_build_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
         if "regenerate" in low or "again" in low or "redo" in low:
             intent["_sub_step"] = "planning"
@@ -111,6 +116,21 @@ def handle_step(
             threading.Thread(target=_plan_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
         return {"kind": "text", "text": "Reply *approve* to build the video, or *regenerate* to re-plan."}
+
+    if sub_step == "awaiting_final_ok":
+        if low in ("approve", "yes", "ok", "okay", "go", "looks good", "perfect", "publish", "continue"):
+            _send(phone, {"kind": "text",
+                          "text": "🎉 Locked in! Captions, overlays and the final trending polish are the next "
+                                  "stage (Remotion) — coming online soon. Your edited base video is saved."})
+            return {"kind": "none"}
+        if "regenerate" in low or "again" in low or "redo" in low or "rebuild" in low:
+            intent["_sub_step"] = "building"
+            session.agent_intent = intent
+            save_session(session)
+            _send(phone, {"kind": "text", "text": "🔁 Rebuilding your edit with fresh B-roll…"})
+            threading.Thread(target=_build_bg, args=(phone, session, intent), daemon=True).start()
+            return {"kind": "none"}
+        return {"kind": "text", "text": "Reply *approve* to keep this cut, or *regenerate* to rebuild the B-roll."}
 
     return start(phone, session, intent)
 
@@ -167,6 +187,81 @@ def _plan_bg(phone: str, session: UserSession, intent: dict) -> None:
         save_session(session)
         _send(phone, {"kind": "text",
                       "text": f"😕 Couldn't analyze that video: {exc}\nSend a different video or type *reset*."})
+
+
+def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
+    """
+    STAGE 2: for each edit-plan segment, generate a B-roll clip (SeedDream seed image
+    → prunaai/p-video), then chroma-key the user's green-screen video over the B-roll
+    timeline with per-segment zoom. Sends the composited video back for review.
+    """
+    try:
+        from tools import image_gen
+        plan     = intent.get("_edit_plan", {}) or {}
+        segments = plan.get("segments", []) or []
+        gs_url   = intent.get("_greenscreen_video_url", "")
+        src_url  = intent.get("_src_video_url", "")
+        duration = float(intent.get("_duration") or 15.0)
+        user_id  = session.verified_user_id or phone
+
+        if not gs_url or not segments:
+            raise RuntimeError("missing green-screen video or edit plan")
+
+        # Clamp segment times to the real video length
+        for s in segments:
+            s["start"] = max(0.0, min(float(s.get("start", 0)), duration))
+            s["end"]   = max(s["start"] + 0.5, min(float(s.get("end", duration)), duration))
+        segments.sort(key=lambda s: s["start"])
+
+        broll: list[dict] = []
+        total = len(segments)
+        for i, seg in enumerate(segments, 1):
+            seg_dur = max(1, int(round(seg["end"] - seg["start"])))
+            prompt  = (seg.get("broll_prompt") or "cinematic b-roll footage").strip()
+            _send(phone, {"kind": "text", "text": f"🎥 Scene {i}/{total}: {prompt[:70]}…"})
+
+            clip_url = None
+            try:
+                img = image_gen.generate_image(prompt, aspect_ratio="2:3")
+                seed_url = img.get("s3_url") or img.get("url") if img.get("ok") else None
+                if seed_url:
+                    vid = video_gen.generate_video_from_image(
+                        seed_url, prompt, duration=min(seg_dur, 10), aspect_ratio="9:16")
+                    if vid.get("ok") and vid.get("url"):
+                        clip_url = vid["url"]
+            except Exception as exc:
+                logger.warning("video_editor: broll scene %d failed: %s", i, exc)
+
+            broll.append({"start": seg["start"], "end": seg["end"],
+                          "url": clip_url, "zoom": seg.get("zoom", "none")})
+
+        # Drop segments whose B-roll failed (compositor uses dark filler for missing urls)
+        broll = [b for b in broll if b.get("url")] or broll
+
+        _send(phone, {"kind": "text", "text": "🧩 Compositing you over the B-roll…"})
+        comp = video_gen.compose_editor_video(gs_url, src_url or gs_url, broll)
+        if not comp.get("ok") or not comp.get("bytes"):
+            raise RuntimeError(f"composite failed: {comp.get('error')}")
+
+        up = aws_storage.upload_bytes(comp["bytes"], content_type="video/mp4",
+                                      extension="mp4", folder=f"{phone}/video_editor")
+        final_url = up.get("s3_url") or up.get("permanent_url")
+        intent["_edited_video_url"] = final_url
+        intent["_sub_step"] = "awaiting_final_ok"
+        session.agent_intent = intent
+        save_session(session)
+
+        _send(phone, {"kind": "media", "media_url": final_url,
+                      "text": "🎬 Here's your edited cut — you over AI B-roll with zoom effects!\n\n"
+                              "Next I'll add punchy captions & overlays. Reply *approve* if you like the base, "
+                              "or *regenerate* to rebuild the B-roll."})
+    except Exception as exc:
+        logger.exception("video_editor _build_bg failed: %s", exc)
+        intent["_sub_step"] = "awaiting_plan_ok"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text",
+                      "text": f"😕 Couldn't build the edit: {exc}\nReply *approve* to try again or *regenerate* to re-plan."})
 
 
 def _video_duration_seconds(url: str) -> float:

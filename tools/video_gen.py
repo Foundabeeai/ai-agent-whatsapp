@@ -818,6 +818,113 @@ def _cover_9x16(img_bytes: bytes, size=(1080, 1920)):
     return _np.array(im)
 
 
+@traceable(run_type="tool", name="compose_editor_video")
+def compose_editor_video(
+    greenscreen_url: str,
+    audio_src_url: str,
+    broll: list[dict],
+    output_fps: int = 24,
+) -> dict:
+    """
+    Composite the AI video-editor result:
+      - background = timeline of AI B-roll clips (one per plan segment), 9:16
+      - foreground = the user's green-screen video, chroma-keyed (green removed), on top
+      - per-segment zoom applied to the presenter
+      - audio taken from the ORIGINAL video
+    broll: [{"start": float, "end": float, "url": str, "zoom": "in|out|none"}]
+    Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
+    """
+    try:
+      with _video_slot("editor"):
+        import tempfile, os as _os, shutil
+        from moviepy.editor import (VideoFileClip, AudioFileClip,
+                                    concatenate_videoclips, CompositeVideoClip, ColorClip)
+        from moviepy.video.fx.all import mask_color, resize as _fx_resize
+
+        W, H = 1080, 1920
+        tmp = tempfile.mkdtemp()
+
+        def _dl(url, name):
+            import requests as _r
+            p = _os.path.join(tmp, name)
+            with open(p, "wb") as f:
+                f.write(_r.get(url, timeout=180).content)
+            return p
+
+        # Green-screen user video (foreground)
+        person_path = _dl(greenscreen_url, "person.mp4")
+        person = VideoFileClip(person_path)
+        D = person.duration or 15.0
+
+        # ── Background B-roll timeline ─────────────────────────────────────
+        bg_segments = []
+        for i, seg in enumerate(sorted(broll, key=lambda s: s.get("start", 0))):
+            seg_dur = max(0.5, float(seg.get("end", 0)) - float(seg.get("start", 0)))
+            try:
+                cp = _dl(seg["url"], f"broll{i}.mp4")
+                clip = VideoFileClip(cp).without_audio()
+                # cover-crop to 9:16
+                clip = clip.fx(_fx_resize, height=H) if clip.h < clip.w else clip.fx(_fx_resize, width=W)
+                clip = clip.resize((W, H))
+                # loop or trim to the segment duration
+                if clip.duration < seg_dur:
+                    n = int(seg_dur / clip.duration) + 1
+                    clip = concatenate_videoclips([clip] * n).subclip(0, seg_dur)
+                else:
+                    clip = clip.subclip(0, seg_dur)
+                bg_segments.append(clip)
+            except Exception as exc:
+                logger.warning("editor: broll seg %d failed (%s) — dark filler", i, exc)
+                bg_segments.append(ColorClip(size=(W, H), color=(12, 12, 12)).set_duration(seg_dur))
+
+        if bg_segments:
+            background = concatenate_videoclips(bg_segments, method="compose")
+            if background.duration < D:
+                background = background.fx(_fx_resize, newsize=(W, H))  # noop safety
+            background = background.set_duration(D)
+        else:
+            background = ColorClip(size=(W, H), color=(12, 12, 12)).set_duration(D)
+        background = background.resize((W, H))
+
+        # ── Foreground: chroma-key the user, apply per-segment zoom ────────
+        person_ck = person.fx(mask_color, color=list(_CHROMA_GREEN), thr=140, s=14).resize((W, H))
+
+        def _zoom_factor(t):
+            for seg in broll:
+                if seg.get("start", 0) <= t < seg.get("end", 0):
+                    z = seg.get("zoom", "none")
+                    prog = (t - seg["start"]) / max(0.1, seg["end"] - seg["start"])
+                    if z == "in":
+                        return 1.0 + 0.12 * prog
+                    if z == "out":
+                        return 1.12 - 0.12 * prog
+            return 1.0
+        person_ck = person_ck.fx(_fx_resize, _zoom_factor).set_position(("center", "center")).set_duration(D)
+
+        final = CompositeVideoClip([background, person_ck], size=(W, H)).set_duration(D)
+
+        # ── Audio from the original video ──────────────────────────────────
+        try:
+            audio_path = _dl(audio_src_url, "audio_src.mp4")
+            src_audio = VideoFileClip(audio_path).audio
+            if src_audio is not None:
+                final = final.set_audio(src_audio.subclip(0, min(D, src_audio.duration)))
+        except Exception as exc:
+            logger.warning("editor: audio attach failed: %s", exc)
+
+        out_path = _os.path.join(tmp, "edited.mp4")
+        final.write_videofile(out_path, fps=output_fps, codec="libx264",
+                              audio_codec="aac", verbose=False, logger=None)
+        final.close(); person.close()
+        with open(out_path, "rb") as f:
+            data = f.read()
+        shutil.rmtree(tmp, ignore_errors=True)
+        return {"ok": True, "bytes": data}
+    except Exception as exc:
+        logger.error("compose_editor_video failed: %s", exc, exc_info=True)
+        return {"ok": False, "error": str(exc)}
+
+
 @traceable(run_type="tool", name="compose_presentation_video")
 def compose_presentation_video(
     lipsync_bytes: bytes,
