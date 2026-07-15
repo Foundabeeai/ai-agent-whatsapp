@@ -100,6 +100,7 @@ def render_reel(
         "npx", "remotion", "render", _ENTRY, _COMPOSITION, out_path,
         f"--props={props_path}",
         "--codec", "h264",
+        "--timeout", "120000",   # delayRender timeout: slow transparent-webm/network frames
         "--log", "error",
     ]
     env = dict(os.environ)
