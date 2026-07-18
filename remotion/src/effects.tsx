@@ -80,6 +80,45 @@ export const CutFlash: React.FC = () => {
   );
 };
 
+// ── Whip-pan swipe: fast blurred streak covering a cut ──────────────────────
+export const WhipSwipe: React.FC = () => {
+  const frame = useCurrentFrame();
+  const {durationInFrames} = useVideoConfig();
+  const pos = interpolate(frame, [0, durationInFrames], [-40, 140]);
+  const op = interpolate(frame, [0, durationInFrames * 0.4, durationInFrames], [0, 0.9, 0], {extrapolateRight: 'clamp'});
+  return (
+    <AbsoluteFill style={{pointerEvents: 'none', opacity: op, filter: 'blur(6px)',
+      background: `linear-gradient(100deg, transparent ${pos - 40}%, rgba(20,20,20,0.95) ${pos - 8}%, rgba(255,255,255,0.9) ${pos}%, rgba(20,20,20,0.95) ${pos + 8}%, transparent ${pos + 40}%)`}} />
+  );
+};
+
+// ── Glitch burst: RGB-split flicker on a hard beat ──────────────────────────
+export const GlitchBurst: React.FC = () => {
+  const frame = useCurrentFrame();
+  const {durationInFrames} = useVideoConfig();
+  const on = frame < durationInFrames;
+  const j1 = (Math.sin(frame * 12.9) * 43758.5) % 1;
+  const dx = on ? (j1 - 0.5) * 40 : 0;
+  const op = interpolate(frame, [0, durationInFrames * 0.5, durationInFrames], [0.7, 0.4, 0], {extrapolateRight: 'clamp'});
+  return (
+    <AbsoluteFill style={{pointerEvents: 'none', opacity: op, mixBlendMode: 'screen'}}>
+      <AbsoluteFill style={{background: 'rgba(255,0,60,0.4)', transform: `translateX(${dx}px)`}} />
+      <AbsoluteFill style={{background: 'rgba(0,200,255,0.4)', transform: `translateX(${-dx}px)`}} />
+    </AbsoluteFill>
+  );
+};
+
+// ── Shake offset helper (for the composited shot at a hard cut) ──────────────
+export const useShake = (durationInFrames: number, amt = 26) => {
+  const frame = useCurrentFrame();
+  if (durationInFrames <= 0) return {x: 0, y: 0};
+  const decay = interpolate(frame, [0, durationInFrames], [1, 0], {extrapolateRight: 'clamp'});
+  return {
+    x: Math.sin(frame * 3.1) * amt * decay,
+    y: Math.cos(frame * 2.3) * amt * decay,
+  };
+};
+
 // ── Shape accents: animated corner brackets framing an emphasis shot ─────────
 export const ShapeAccent: React.FC<{color?: string}> = ({color = '#FFE600'}) => {
   const frame = useCurrentFrame();

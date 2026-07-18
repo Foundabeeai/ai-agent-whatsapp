@@ -248,8 +248,14 @@ def _generate_stopmotion_broll(phone: str, segments: list[dict]) -> list[str]:
         return list(ex.map(_gen, segments))
 
 
-_DOODLES = ("arrows", "circle", "underline", "none")
+_DOODLES = ("none", "arrow", "arrows", "circle", "underline", "highlighter",
+            "box", "brackets", "stars", "action_lines", "check", "cross")
 _ZOOMS = ("in", "out", "punch", "none")
+_TRANSITIONS = ("none", "flash", "whip", "glitch", "shake")
+_INFO_TYPES = ("none", "counter", "progress", "ring", "stat")
+# Varied fallbacks so an unspecified plan still doesn't feel repetitive
+_DOODLE_FALLBACK = ("arrow", "none", "circle", "action_lines", "box", "none", "underline", "stars")
+_TRANS_FALLBACK = ("flash", "whip", "flash", "glitch", "flash", "whip")
 
 
 def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]) -> list[dict]:
@@ -266,16 +272,34 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
         broll = broll_urls[i] if i < len(broll_urls) else ""
         peak = bool(seg.get("peak") or seg.get("emphasis"))
 
-        # ── LLM-chosen styling, validated; deterministic fallback if missing ──
+        # ── LLM-chosen styling, validated; varied fallback if missing ──
         doodle = str(seg.get("doodle", "")).lower().strip()
         if doodle not in _DOODLES:
-            doodle = ("arrows", "none", "circle", "none")[i % 4]
+            doodle = _DOODLE_FALLBACK[i % len(_DOODLE_FALLBACK)]
 
         zoom = str(seg.get("zoom", "")).lower().strip()
         if zoom not in _ZOOMS:
             zoom = _ZOOM_CYCLE[i % len(_ZOOM_CYCLE)]
         if peak and zoom in ("none", ""):
             zoom = "punch"
+
+        transition = str(seg.get("transition", "")).lower().strip()
+        if transition not in _TRANSITIONS:
+            transition = _TRANS_FALLBACK[i % len(_TRANS_FALLBACK)]
+
+        emoji = str(seg.get("emoji", "") or "").strip()[:4]
+
+        # infographic — only pass through a valid, numeric one
+        info = seg.get("info") or {}
+        info_type = str(info.get("type", "none")).lower().strip()
+        if info_type not in _INFO_TYPES or info_type == "none":
+            info_out = {"type": "none"}
+        else:
+            try:
+                info_out = {"type": info_type, "value": float(info.get("value") or 0),
+                            "label": str(info.get("label", ""))[:24], "suffix": str(info.get("suffix", ""))[:4]}
+            except Exception:
+                info_out = {"type": "none"}
 
         big_llm = str(seg.get("big_text", "")).strip().upper()
         big_fallback = " ".join(cap.split()[:2]).upper() if cap else ""
@@ -285,6 +309,9 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
             "start": seg["start"], "end": seg["end"],
             "presenter": "full",
             "doodle": doodle,
+            "emoji": emoji,
+            "info": info_out,
+            "transition": transition,
             "lens": lens,
             "zoom": zoom,
             "emphasis": peak,

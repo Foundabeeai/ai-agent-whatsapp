@@ -1661,15 +1661,26 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         "  • broll_prompt: cinematic stop-motion B-roll relevant to what's said (no text/logos)\n"
         "  • caption: SHORT (max 6 words), matching what they say in that beat\n"
         "  • zoom: 'in' (build tension), 'out' (reveal/breathe), 'punch' (hard emphasis), or 'none'\n"
-        "  • doodle: a hand-drawn overlay chosen for MEANING — 'arrows' (hype/point at them, big claim), "
-        "'circle' (spotlight/highlight one thing), 'underline' (drive home a key caption), or 'none' "
-        "(let a calm/serious beat breathe). Use variety across the video; not every beat needs one.\n"
-        "  • big_text: 1-2 word ALL-CAPS phrase to slam BEHIND the subject for a punchy keyword moment, "
-        "else \"\" (use sparingly, only on the 1-3 biggest beats)\n"
+        "  • doodle: a hand-drawn overlay chosen for MEANING. Options: 'arrow' (point at them / one big "
+        "claim), 'arrows' (surround for hype), 'circle' (spotlight one thing), 'underline' or 'highlighter' "
+        "(drive home a key caption word), 'box' or 'brackets' (frame/focus on them), 'stars' (a win / "
+        "delight), 'action_lines' (high-energy hype), 'check' (yes/correct/do this), 'cross' (no/myth/don't), "
+        "or 'none' (let a calm beat breathe). VARY these across the video — never repeat the same one back "
+        "to back, and leave some beats with 'none'.\n"
+        "  • emoji: a single relevant emoji to pop on a punchy beat (🔥💰✅❌👀🚀📈), else \"\".\n"
+        "  • info: ONLY when the person states a number/stat/percentage in that beat, add an infographic — "
+        "{\"type\":\"counter\"|\"progress\"|\"ring\"|\"stat\", \"value\": <number>, \"label\":\"SHORT LABEL\", "
+        "\"suffix\":\"\"}. counter=big count-up (e.g. downloads/followers), ring/progress=a percentage, "
+        "stat=a callout card. Otherwise {\"type\":\"none\"}.\n"
+        "  • big_text: 1-2 word ALL-CAPS phrase to slam BEHIND the subject for a punchy keyword, else \"\" "
+        "(only the 1-3 biggest beats).\n"
+        "  • transition: how this cut ENTERS — 'flash' (default), 'whip' (fast energetic swipe), 'glitch' "
+        "(digital/tech beat), 'shake' (impact/hard hit), or 'none'. Match it to the energy of the beat.\n"
         "  • lens: true only for a rare intense 'through-the-scope' moment, else false\n"
-        "  • peak: true if this is a climax/punchline beat (gets a harder zoom), else false\n"
-        "- Think like an editor: hook beats get arrows or big_text, explanation beats stay clean, "
-        "the payoff beat gets a punch zoom. Keep it authentic — don't invent facts.\n"
+        "  • peak: true if this is a climax/punchline beat, else false\n"
+        "- Think like a real editor: hook beats get an arrow/action_lines/big_text, explanation beats stay "
+        "clean, stat beats get an infographic, the payoff beat gets a punch zoom + shake. Keep it authentic "
+        "— never invent numbers or facts not in the transcript.\n"
         "- Output ONLY valid JSON. No markdown."
     )
     user = (
@@ -1677,8 +1688,8 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         f"Video duration: {duration_sec:.1f}s\n"
         f"Transcript:\n{transcript}\n\n"
         'Return JSON: {"title":"...","story":"...","segments":[{"start":0,"end":4,'
-        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"arrows","big_text":"","lens":false,'
-        '"peak":false}],"cta":"..."}'
+        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"arrow","emoji":"","big_text":"",'
+        '"info":{"type":"none"},"transition":"flash","lens":false,"peak":false}],"cta":"..."}'
     )
     raw = _chat(system, user, temperature=0.7, max_tokens=2200)
     try:
@@ -1695,8 +1706,8 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
             "segments": [{
                 "start": 0.0, "end": float(duration_sec or 15),
                 "broll_prompt": f"cinematic b-roll for {brand.get('brand_description') or 'the topic'}",
-                "caption": "", "zoom": "none", "doodle": "none", "big_text": "",
-                "lens": False, "peak": False,
+                "caption": "", "zoom": "none", "doodle": "none", "emoji": "", "big_text": "",
+                "info": {"type": "none"}, "transition": "flash", "lens": False, "peak": False,
             }],
             "cta": "Follow for more",
         }
