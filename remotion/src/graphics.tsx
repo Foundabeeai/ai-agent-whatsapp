@@ -1,5 +1,6 @@
 import React from 'react';
 import {AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate, spring} from 'remotion';
+import {ANTON, MONT} from './fonts';
 
 // A wobbly hand-drawn arrow: tapered double-stroke shaft + chunky head, with a
 // slight roughness so it reads as marker, not vector.
@@ -131,17 +132,16 @@ export const BigTextBehind: React.FC<{text: string; color?: string; shadow?: str
     <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center'}}>
       <div
         style={{
-          transform: `scale(${scale})`,
-          fontFamily: '"Arial Black", Arial, sans-serif',
-          fontWeight: 900,
-          fontStyle: 'italic',
-          fontSize: 250,
-          lineHeight: 0.9,
-          letterSpacing: -6,
+          transform: `scale(${scale}) rotate(-3deg)`,
+          fontFamily: ANTON,
+          fontWeight: 400,
+          fontSize: 300,
+          lineHeight: 0.86,
+          letterSpacing: 2,
           textAlign: 'center',
           textTransform: 'uppercase',
           color,
-          textShadow: `10px 12px 0 ${shadow}`,
+          textShadow: `12px 14px 0 ${shadow}, 0 0 60px rgba(0,0,0,0.25)`,
           padding: '0 20px',
           whiteSpace: 'pre-wrap',
         }}
@@ -193,18 +193,19 @@ export const LensVignette: React.FC = () => (
   </AbsoluteFill>
 );
 
-// ── Word-by-word kinetic captions ───────────────────────────────────────────
+// ── Word-by-word kinetic captions (elite TikTok / Hormozi style) ────────────
 export type Word = {start: number; end: number; text: string};
+
+const HL = '#2BE86B'; // punchy green highlight for the active word
 
 export const WordCaptions: React.FC<{words: Word[]; position?: 'top' | 'bottom'; highlight?: string}> = ({
   words,
   position = 'bottom',
-  highlight = '#FFE600',
+  highlight = HL,
 }) => {
   const frame = useCurrentFrame();
-  const {fps, durationInFrames} = useVideoConfig();
+  const {fps} = useVideoConfig();
   const t = frame / fps;
-  // group into chunks of up to 3 words for readability
   const CHUNK = 3;
   const chunks: Word[][] = [];
   for (let i = 0; i < words.length; i += CHUNK) chunks.push(words.slice(i, i + CHUNK));
@@ -212,35 +213,49 @@ export const WordCaptions: React.FC<{words: Word[]; position?: 'top' | 'bottom';
   if (!active) return null;
   const chunkStartFrame = Math.round(active[0].start * fps);
   const local = frame - chunkStartFrame;
-  const pop = spring({frame: local, fps, config: {damping: 13, stiffness: 220, mass: 0.5}, durationInFrames: 8});
-  const scale = interpolate(pop, [0, 1], [0.72, 1]);
+  const pop = spring({frame: local, fps, config: {damping: 12, stiffness: 240, mass: 0.5}, durationInFrames: 7});
+  const scale = interpolate(pop, [0, 1], [0.8, 1]);
+
   return (
     <AbsoluteFill
       style={{
         justifyContent: position === 'top' ? 'flex-start' : 'flex-end',
         alignItems: 'center',
-        paddingTop: position === 'top' ? 220 : 0,
-        paddingBottom: position === 'bottom' ? 340 : 0,
-        paddingLeft: 60,
-        paddingRight: 60,
+        paddingTop: position === 'top' ? 240 : 0,
+        paddingBottom: position === 'bottom' ? 380 : 0,
+        paddingLeft: 70,
+        paddingRight: 70,
       }}
     >
-      <div style={{transform: `scale(${scale})`, textAlign: 'center', display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'center'}}>
+      <div style={{transform: `scale(${scale})`, textAlign: 'center', display: 'flex', flexWrap: 'wrap',
+        gap: '10px 14px', justifyContent: 'center', alignItems: 'center'}}>
         {active.map((w, i) => {
-          const on = t >= w.start;
+          const isActive = t >= w.start && t < w.end;
+          const spoken = t >= w.start;
+          const wp = spring({frame: frame - Math.round(w.start * fps), fps,
+            config: {damping: 11, stiffness: 260, mass: 0.4}, durationInFrames: 6});
+          const wScale = isActive ? interpolate(wp, [0, 1], [0.86, 1.06]) : 1;
           return (
             <span
               key={i}
               style={{
-                fontFamily: '"Arial Black", Arial, sans-serif',
+                fontFamily: MONT,
                 fontWeight: 900,
-                fontSize: 78,
-                lineHeight: 1.02,
+                fontSize: 82,
+                lineHeight: 1.0,
+                letterSpacing: -1,
                 textTransform: 'uppercase',
-                color: on ? highlight : '#ffffff',
-                WebkitTextStroke: '4px #000',
+                color: isActive ? '#0A0A0A' : '#ffffff',
+                background: isActive ? highlight : 'transparent',
+                borderRadius: 16,
+                padding: isActive ? '4px 18px' : '4px 4px',
+                transform: `scale(${wScale}) rotate(${isActive ? -1.5 : 0}deg)`,
+                display: 'inline-block',
+                WebkitTextStroke: isActive ? '0px' : '2px #000',
                 paintOrder: 'stroke fill',
-                textShadow: '0 6px 16px rgba(0,0,0,0.85)',
+                textShadow: isActive ? '0 6px 14px rgba(0,0,0,0.35)' : '0 5px 12px rgba(0,0,0,0.9)',
+                opacity: spoken ? 1 : 0.35,
+                boxShadow: isActive ? '0 10px 22px rgba(0,0,0,0.35)' : 'none',
               }}
             >
               {w.text}
