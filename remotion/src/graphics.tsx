@@ -1,26 +1,43 @@
 import React from 'react';
 import {AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate, spring} from 'remotion';
 
+// A wobbly hand-drawn arrow: tapered double-stroke shaft + chunky head, with a
+// slight roughness so it reads as marker, not vector.
+const MarkerArrow: React.FC<{color: string; jitter: number}> = ({color, jitter}) => {
+  const w = 9;
+  return (
+    <g strokeLinecap="round" strokeLinejoin="round" fill="none">
+      {/* soft dark backing for contrast on busy video */}
+      <path d={`M -46 ${jitter} C -26 ${jitter - 5}, -10 ${jitter + 4}, 8 0`} stroke="rgba(0,0,0,0.35)" strokeWidth={w + 8} />
+      <path d="M -8 -17 L 12 0 L -8 17" stroke="rgba(0,0,0,0.35)" strokeWidth={w + 8} />
+      {/* marker stroke */}
+      <path d={`M -46 ${jitter} C -26 ${jitter - 5}, -10 ${jitter + 4}, 8 0`} stroke={color} strokeWidth={w} />
+      <path d="M -8 -17 L 12 0 L -8 17" stroke={color} strokeWidth={w} />
+    </g>
+  );
+};
+
 // ── Hand-drawn arrow ring pointing inward at the subject ────────────────────
 export const ArrowsRing: React.FC<{color?: string}> = ({color = '#ffffff'}) => {
   const frame = useCurrentFrame();
   const {fps, width, height} = useVideoConfig();
   const cx = width / 2;
   const cy = height / 2;
-  const R = Math.min(width, height) * 0.46;
-  const count = 12;
+  const R = Math.min(width, height) * 0.47;
+  const count = 10;
   const arrows: React.ReactNode[] = [];
   for (let i = 0; i < count; i++) {
     const ang = (i / count) * Math.PI * 2 - Math.PI / 2;
-    const x = cx + Math.cos(ang) * R;
-    const y = cy + Math.sin(ang) * R;
-    const appear = spring({frame, fps, config: {damping: 15}, delay: i * 1.2, durationInFrames: 8});
-    const jitter = 3 * Math.sin((frame + i * 7) / 6);
-    const deg = (ang * 180) / Math.PI + 180 + jitter; // point toward centre
-    const s = 0.9 + 0.1 * Math.sin((frame + i * 9) / 8);
+    const breathe = 1 + 0.04 * Math.sin((frame + i * 6) / 7);
+    const x = cx + Math.cos(ang) * R * breathe;
+    const y = cy + Math.sin(ang) * R * breathe;
+    const appear = spring({frame, fps, config: {damping: 13, mass: 0.5}, delay: i * 1.4, durationInFrames: 9});
+    const jitter = 4 * Math.sin((frame + i * 11) / 5);
+    const deg = (ang * 180) / Math.PI + 180 + jitter;
+    const s = (0.95 + 0.08 * Math.sin((frame + i * 9) / 8)) * appear;
     arrows.push(
-      <g key={i} transform={`translate(${x} ${y}) rotate(${deg}) scale(${appear * s})`} opacity={appear}>
-        <path d="M -34 0 L 6 0 M -6 -14 L 10 0 L -6 14" fill="none" stroke={color} strokeWidth={7} strokeLinecap="round" strokeLinejoin="round" />
+      <g key={i} transform={`translate(${x} ${y}) rotate(${deg}) scale(${s})`} opacity={appear}>
+        <MarkerArrow color={color} jitter={jitter} />
       </g>
     );
   }
@@ -31,36 +48,41 @@ export const ArrowsRing: React.FC<{color?: string}> = ({color = '#ffffff'}) => {
   );
 };
 
-// ── Scribbly marker circle drawn around the subject ─────────────────────────
+// ── Scribbly marker circle drawn around the subject (rough, multi-loop) ──────
 export const ScribbleCircle: React.FC<{color?: string}> = ({color = '#FFD400'}) => {
   const frame = useCurrentFrame();
   const {fps, width, height} = useVideoConfig();
   const cx = width / 2;
-  const cy = height * 0.46;
-  const rx = width * 0.4;
-  const ry = height * 0.28;
-  // Two offset scribble loops for a hand-drawn feel.
-  const pts = (rOff: number, phase: number) => {
+  const cy = height * 0.45;
+  const rx = width * 0.42;
+  const ry = height * 0.3;
+  // Three overlapping loops, each with high-frequency wobble for a marker scrawl.
+  const pts = (rOff: number, phase: number, wob: number) => {
     let d = '';
-    const steps = 60;
+    const steps = 90;
     for (let i = 0; i <= steps; i++) {
-      const t = (i / steps) * Math.PI * 2;
-      const wob = 1 + 0.04 * Math.sin(t * 6 + phase);
-      const x = cx + Math.cos(t) * (rx + rOff) * wob;
-      const y = cy + Math.sin(t) * (ry + rOff) * wob;
+      const t = (i / steps) * Math.PI * 2 * 1.08; // overshoot so ends cross
+      const r = 1 + wob * Math.sin(t * 7 + phase) + 0.02 * Math.sin(t * 19 + phase);
+      const x = cx + Math.cos(t + 0.15) * (rx + rOff) * r;
+      const y = cy + Math.sin(t) * (ry + rOff) * r;
       d += i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
     }
     return d;
   };
-  const draw = spring({frame, fps, config: {damping: 200}, durationInFrames: 18});
-  const dash = 4200;
+  const draw = spring({frame, fps, config: {damping: 200}, durationInFrames: 20});
+  const dash = 6000;
+  const loop = (d: string, sw: number, op: number, delay: number) => (
+    <path d={d} fill="none" stroke={color} strokeWidth={sw} strokeLinecap="round" opacity={op}
+      strokeDasharray={dash} strokeDashoffset={dash * (1 - Math.max(0, draw - delay))} />
+  );
   return (
     <AbsoluteFill style={{pointerEvents: 'none'}}>
       <svg width="100%" height="100%">
-        <path d={pts(0, 0)} fill="none" stroke={color} strokeWidth={12} strokeLinecap="round"
-          strokeDasharray={dash} strokeDashoffset={dash * (1 - draw)} />
-        <path d={pts(18, 1.7)} fill="none" stroke={color} strokeWidth={8} strokeLinecap="round" opacity={0.85}
-          strokeDasharray={dash} strokeDashoffset={dash * (1 - Math.max(0, draw - 0.15))} />
+        <g style={{filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.35))'}}>
+          {loop(pts(0, 0, 0.05), 16, 1, 0)}
+          {loop(pts(22, 2.1, 0.06), 11, 0.9, 0.12)}
+          {loop(pts(-16, 4.0, 0.045), 8, 0.75, 0.22)}
+        </g>
       </svg>
     </AbsoluteFill>
   );

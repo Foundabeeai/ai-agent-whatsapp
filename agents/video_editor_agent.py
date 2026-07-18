@@ -205,41 +205,86 @@ def _plan_bg(phone: str, session: UserSession, intent: dict) -> None:
 
 _SCENE_CYCLE = ["grid", "solid", "cardboard", "split", "solid"]
 _SOLID_COLORS = ["#E7B10A", "#7A1F2B", "#2E6E8E", "#C24914"]   # yellow, maroon, blue, orange
+_ZOOM_CYCLE = ["in", "out", "in", "none"]
 
 
-def _plan_to_scenes(segments: list[dict], duration: float) -> list[dict]:
+def _generate_stopmotion_broll(phone: str, segments: list[dict]) -> list[str]:
     """
-    Turn the edit-plan segments into designed Hormozi-style scenes:
-      - backgrounds cycle grid → solid → cardboard → split
-      - grid scenes get the inward arrow ring + lens; cardboard scenes get the
-        sticker presenter + scribble circle; solid/split scenes get big-text-behind
-      - emphasis segments punch-zoom
+    Generate a stop-motion style B-roll clip per segment via SeedDream → prunaai
+    p-video, upload each to S3, and return the URLs (parallel, order-preserving).
+    Missing/failed clips come back as "" so the scene falls back to a designed bg.
+    """
+    from tools import image_gen
+    from concurrent.futures import ThreadPoolExecutor
+
+    _STYLE = (" — stop motion animation style, claymation, handmade miniature set, "
+              "tactile textures, stepped choppy stop-motion movement")
+
+    def _gen(seg: dict) -> str:
+        prompt = (seg.get("broll_prompt") or "cinematic establishing shot").strip()
+        styled = prompt + _STYLE
+        try:
+            img = image_gen.generate_image(styled, aspect_ratio="2:3")
+            seed = (img.get("s3_url") or img.get("url")) if img.get("ok") else None
+            if not seed:
+                return ""
+            seg_dur = max(2, int(round(seg["end"] - seg["start"])))
+            vid = video_gen.generate_video_from_image(
+                seed, styled, duration=min(seg_dur, 10), aspect_ratio="9:16", fps=12)
+            if vid.get("ok") and vid.get("bytes"):
+                up = aws_storage.upload_bytes(vid["bytes"], content_type="video/mp4",
+                                              extension="mp4", folder=f"{phone}/video_editor/broll")
+                return up.get("s3_url") or vid.get("url") or ""
+        except Exception as exc:
+            logger.warning("video_editor: stopmotion broll failed: %s", exc)
+        return ""
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        return list(ex.map(_gen, segments))
+
+
+def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]) -> list[dict]:
+    """
+    Turn the edit-plan segments into scenes. The background is the stop-motion
+    B-roll video when available; otherwise a designed background (grid/solid/…).
+    Doodles, lens, big-text and ≥25% cut zooms are layered on top.
     """
     scenes: list[dict] = []
     solid_i = 0
     for i, seg in enumerate(segments):
-        bg = _SCENE_CYCLE[i % len(_SCENE_CYCLE)]
         emphasis = bool(seg.get("emphasis"))
         cap = (seg.get("caption") or "").strip()
         big_words = " ".join(cap.split()[:2]).upper() if cap else ""
+        broll = broll_urls[i] if i < len(broll_urls) else ""
+        zoom = "punch" if emphasis else _ZOOM_CYCLE[i % len(_ZOOM_CYCLE)]
+
+        # doodle rotates so cuts feel varied (arrows / circle / none)
+        doodle = ("arrows", "none", "circle", "none")[i % 4]
 
         scene = {
             "start": seg["start"], "end": seg["end"],
-            "bg": bg,
-            "presenter": "sticker" if bg == "cardboard" else "full",
-            "doodle": "arrows" if bg == "grid" else ("circle" if bg == "cardboard" else "none"),
-            "lens": bg == "grid",
-            "zoom": "punch" if emphasis else "none",
+            "presenter": "full",
+            "doodle": doodle,
+            "lens": (i % 4 == 0),
+            "zoom": zoom,
             "emphasis": emphasis,
-            "bigText": big_words if bg in ("solid", "split") else "",
+            "bigText": big_words if (emphasis and not broll) else "",
             "color": "", "color2": "",
         }
-        if bg == "solid":
-            scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
-            solid_i += 1
-        elif bg == "split":
-            scene["color"] = "#EDE6D6"
-            scene["color2"] = "#E7B10A"
+        if broll:
+            scene["bg"] = "broll"
+            scene["brollSrc"] = broll
+        else:
+            bg = _SCENE_CYCLE[i % len(_SCENE_CYCLE)]
+            scene["bg"] = bg
+            if bg == "solid":
+                scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
+                solid_i += 1
+            elif bg == "split":
+                scene["color"] = "#EDE6D6"
+                scene["color2"] = "#E7B10A"
+            if bg in ("solid", "split"):
+                scene["bigText"] = big_words
         scenes.append(scene)
     return scenes
 
@@ -272,10 +317,12 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             s["end"]   = max(s["start"] + 0.5, min(float(s.get("end", duration)), duration))
         segments.sort(key=lambda s: s["start"])
 
-        # 1) Map segments → designed scenes
-        scenes = _plan_to_scenes(segments, duration)
+        # 1) Generate stop-motion B-roll backgrounds (Replicate p-video) → S3
+        _send(phone, {"kind": "text", "text": f"🎥 Creating {len(segments)} stop-motion background scenes… ⏱ a few minutes"})
+        broll_urls = _generate_stopmotion_broll(phone, segments)
+        scenes = _plan_to_scenes(segments, duration, broll_urls)
 
-        # 2) Remotion back plate: designed backgrounds + big-text (opaque h264)
+        # 2) Remotion back plate: background videos + big-text (opaque h264)
         _send(phone, {"kind": "text", "text": "🎨 Designing your backgrounds and big text…"})
         back = remotion_render.render_layer(scenes, words, duration, layer="back", caption_pos="bottom")
         if not back.get("ok") or not back.get("bytes"):

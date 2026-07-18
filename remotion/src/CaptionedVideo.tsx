@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig} from 'remotion';
+import {AbsoluteFill, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
 import {z} from 'zod';
 import {SceneBackground} from './backgrounds';
 import {ArrowsRing, ScribbleCircle, BigTextBehind, LensVignette, WordCaptions} from './graphics';
@@ -38,6 +38,42 @@ export const captionedVideoSchema = z.object({
 
 export type CaptionedVideoProps = z.infer<typeof captionedVideoSchema>;
 
+// One shot of the composited (background+presenter) video with a per-cut zoom.
+// Every cut moves at least 25%; emphasis cuts punch harder.
+const ZoomedShot: React.FC<{
+  src: string;
+  startFrom: number;
+  zoom: string;
+  emphasis: boolean;
+  durationInFrames: number;
+}> = ({src, startFrom, zoom, emphasis, durationInFrames}) => {
+  const frame = useCurrentFrame();
+  const AMT = emphasis ? 0.34 : 0.27; // ≥25% travel on every cut
+  let from = 1.0;
+  let to = 1.0 + AMT;
+  if (zoom === 'out') {
+    from = 1.0 + AMT;
+    to = 1.0;
+  } else if (zoom === 'punch' || emphasis) {
+    from = 1.06;
+    to = 1.06 + AMT;
+  }
+  const scale = interpolate(frame, [0, durationInFrames], [from, to], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  return (
+    <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black'}}>
+      <OffthreadVideo
+        src={src}
+        startFrom={startFrom}
+        muted={false}
+        style={{width: '100%', height: '100%', objectFit: 'cover', transform: `scale(${scale})`}}
+      />
+    </AbsoluteFill>
+  );
+};
+
 export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, captionPos, layer, bgVideo}) => {
   const {fps} = useVideoConfig();
   const showBack = layer === 'all' || layer === 'back';
@@ -45,10 +81,18 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
 
   return (
     <AbsoluteFill style={{backgroundColor: 'black'}}>
-      {/* ── FRONT base: the composited back+presenter video (opaque) ── */}
-      {layer === 'front' && bgVideo ? (
-        <OffthreadVideo src={bgVideo} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
-      ) : null}
+      {/* ── FRONT base: the composited back+presenter video, per-scene zoom ── */}
+      {layer === 'front' && bgVideo
+        ? scenes.map((s, i) => {
+            const from = Math.max(0, Math.round(s.start * fps));
+            const dur = Math.max(1, Math.round((s.end - s.start) * fps));
+            return (
+              <Sequence key={`bv${i}`} from={from} durationInFrames={dur}>
+                <ZoomedShot src={bgVideo} startFrom={from} zoom={s.zoom} emphasis={s.emphasis} durationInFrames={dur} />
+              </Sequence>
+            );
+          })
+        : null}
 
       {/* ── BACK: designed backgrounds + giant text behind the subject ── */}
       {showBack &&

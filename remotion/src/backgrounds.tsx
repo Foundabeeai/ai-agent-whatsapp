@@ -55,14 +55,13 @@ export const SplitBG: React.FC<{color?: string; color2?: string}> = ({color = '#
 );
 
 // ── AI B-roll shot (kept as an optional scene type) ─────────────────────────
-export const BrollBG: React.FC<{src: string; zoom?: string; durationInFrames: number}> = ({src, zoom = 'none', durationInFrames}) => {
-  const frame = useCurrentFrame();
-  const from = zoom === 'out' ? 1.15 : 1.0;
-  const to = zoom === 'out' ? 1.0 : zoom === 'in' ? 1.15 : 1.08;
-  const scale = interpolate(frame, [0, durationInFrames], [from, to], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+// Static cover — the per-scene zoom is applied in the FRONT pass to the whole
+// composited shot (background + presenter together), so the back plate must not
+// zoom or it would double-zoom and mismatch the keyed presenter.
+export const BrollBG: React.FC<{src: string; zoom?: string; durationInFrames: number}> = ({src}) => {
   return (
     <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black'}}>
-      <OffthreadVideo src={src} muted style={{width: '100%', height: '100%', objectFit: 'cover', transform: `scale(${scale})`}} />
+      <OffthreadVideo src={src} muted style={{width: '100%', height: '100%', objectFit: 'cover'}} />
     </AbsoluteFill>
   );
 };
