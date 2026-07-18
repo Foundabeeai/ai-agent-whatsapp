@@ -30,13 +30,11 @@ def _deps_ready() -> bool:
     return os.path.isdir(os.path.join(_REMOTION_DIR, "node_modules", "remotion"))
 
 
-@traceable(run_type="tool", name="render_reel_remotion")
-def render_reel(
-    presenter_src: str,
+def render_layer(
     scenes: list[dict],
     words: list[dict],
     duration_sec: float,
-    audio_src: str = "",
+    layer: str = "back",
     fps: int = 24,
     width: int = 1080,
     height: int = 1920,
@@ -44,27 +42,25 @@ def render_reel(
     timeout: int = 1200,
 ) -> dict:
     """
-    Render the Hormozi-style talking-head reel in Remotion:
-      - per-scene designed backgrounds (grid / cardboard / solid / split / broll)
-      - the transparent presenter (full-bleed or sticker cutout) on top
-      - giant kinetic text behind the subject, hand-drawn doodles, lens vignette
-      - word-by-word kinetic captions, original audio, clean cut transitions
-    scenes: [{start,end,bg,color,color2,brollSrc,presenter,bigText,doodle,zoom,lens,emphasis}]
-    words:  [{start,end,text}]
-    Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
+    Render ONE graphics layer of the Hormozi-style reel in Remotion — no presenter
+    video is fed to Remotion (transparent *input* video hangs on the server).
+      layer="back"  → opaque backgrounds + big-text-behind (h264 mp4)
+      layer="front" → doodles + lens + captions + grain, TRANSPARENT (ProRes 4444 mov)
+    The presenter is chroma-keyed and sandwiched between these two layers by ffmpeg.
+    Returns {"ok": True, "bytes": b"...", "ext": "mp4|mov"} or {"ok": False, "error": "..."}.
     """
     if not _deps_ready():
         return {"ok": False, "error": "remotion deps not installed (run npm install in remotion/)"}
-    if not presenter_src and not scenes:
-        return {"ok": False, "error": "nothing to render (no presenter and no scenes)"}
+    if not scenes:
+        return {"ok": False, "error": "no scenes to render"}
 
+    transparent = (layer == "front")
     props = {
         "fps": int(fps),
         "width": int(width),
         "height": int(height),
         "durationInFrames": max(1, int(round(duration_sec * fps))),
-        "audioSrc": audio_src or "",
-        "presenterSrc": presenter_src or "",
+        "layer": layer,
         "captionPos": caption_pos if caption_pos in ("top", "bottom") else "bottom",
         "scenes": [
             {
@@ -90,19 +86,26 @@ def render_reel(
         ],
     }
 
+    ext = "mov" if transparent else "mp4"
     tmp = tempfile.mkdtemp()
     props_path = os.path.join(tmp, "props.json")
-    out_path = os.path.join(tmp, "final.mp4")
+    out_path = os.path.join(tmp, f"layer.{ext}")
     with open(props_path, "w") as f:
         json.dump(props, f)
 
     cmd = [
         "npx", "remotion", "render", _ENTRY, _COMPOSITION, out_path,
         f"--props={props_path}",
-        "--codec", "h264",
-        "--timeout", "120000",   # delayRender timeout: slow transparent-webm/network frames
+        "--timeout", "120000",
         "--log", "error",
     ]
+    if transparent:
+        # ProRes 4444 carries alpha on OUTPUT (reliable, unlike transparent input).
+        # Transparent output requires PNG image frames.
+        cmd += ["--codec", "prores", "--prores-profile", "4444",
+                "--pixel-format", "yuva444p10le", "--image-format", "png"]
+    else:
+        cmd += ["--codec", "h264"]
     env = dict(os.environ)
     env.setdefault("REMOTION_DISABLE_TELEMETRY", "1")
 
@@ -127,5 +130,5 @@ def render_reel(
     except Exception as exc:
         return {"ok": False, "error": f"could not read remotion output: {exc}"}
 
-    logger.info("remotion render: %d bytes", len(data))
-    return {"ok": True, "bytes": data}
+    logger.info("remotion render (%s): %d bytes", layer, len(data))
+    return {"ok": True, "bytes": data, "ext": ext}

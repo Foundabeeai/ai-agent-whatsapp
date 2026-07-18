@@ -272,31 +272,26 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             s["end"]   = max(s["start"] + 0.5, min(float(s.get("end", duration)), duration))
         segments.sort(key=lambda s: s["start"])
 
-        # 1) Transparent presenter (green → alpha ProRes 4444 MOV)
-        _send(phone, {"kind": "text", "text": "🟢 Cutting you out onto a transparent background…"})
-        tr = video_gen.greenscreen_to_transparent_video(gs_url)
-        if not tr.get("ok") or not tr.get("bytes"):
-            raise RuntimeError(f"transparency failed: {tr.get('error')}")
-        pu = aws_storage.upload_bytes(tr["bytes"], content_type=tr.get("content_type", "video/quicktime"),
-                                      extension=tr.get("ext", "mov"), folder=f"{phone}/video_editor")
-        presenter_src = pu.get("s3_url") or pu.get("permanent_url")
-
-        # 2) Map segments → designed scenes
+        # 1) Map segments → designed scenes
         scenes = _plan_to_scenes(segments, duration)
 
-        # 3) Remotion render → final reel
-        _send(phone, {"kind": "text", "text": "🎬 Designing your reel — backgrounds, captions, doodles and cuts…"})
-        out = remotion_render.render_reel(
-            presenter_src=presenter_src,
-            scenes=scenes,
-            words=words,
-            duration_sec=duration,
-            audio_src=src_url,
-            fps=24, width=1080, height=1920,
-            caption_pos="bottom",
-        )
+        # 2) Render the two Remotion graphics layers (no transparent video INTO
+        #    Remotion — that hangs on the server; ffmpeg composites the presenter).
+        _send(phone, {"kind": "text", "text": "🎨 Designing your backgrounds and big text…"})
+        back = remotion_render.render_layer(scenes, words, duration, layer="back", caption_pos="bottom")
+        if not back.get("ok") or not back.get("bytes"):
+            raise RuntimeError(f"back-layer render failed: {back.get('error')}")
+
+        _send(phone, {"kind": "text", "text": "✏️ Adding captions, doodles and effects…"})
+        front = remotion_render.render_layer(scenes, words, duration, layer="front", caption_pos="bottom")
+        if not front.get("ok") or not front.get("bytes"):
+            raise RuntimeError(f"front-layer render failed: {front.get('error')}")
+
+        # 3) ffmpeg: chroma-key the presenter and sandwich between back & front
+        _send(phone, {"kind": "text", "text": "🎬 Compositing your reel — cuts, presenter and captions…"})
+        out = video_gen.composite_reel(back["bytes"], front["bytes"], gs_url, src_url)
         if not out.get("ok") or not out.get("bytes"):
-            raise RuntimeError(out.get("error") or "remotion render returned nothing")
+            raise RuntimeError(out.get("error") or "composite returned nothing")
 
         final_bytes = out["bytes"]
         logger.info("video_editor: final reel %.1f MB", len(final_bytes) / 1e6)

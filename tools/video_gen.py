@@ -845,7 +845,65 @@ def compress_for_whatsapp(video_bytes: bytes, target_mb: float = 14.0) -> bytes 
         return None
 
 
-@traceable(run_type="tool", name="greenscreen_to_transparent_video")
+
+def composite_reel(back_bytes: bytes, front_bytes: bytes, greenscreen_url: str,
+                   audio_url: str = "") -> dict:
+    """
+    Sandwich the chroma-keyed presenter between the Remotion back plate (opaque
+    backgrounds + big-text) and front plate (transparent ProRes: doodles, captions,
+    grain), then add the original audio. All compositing is done in ffmpeg, which
+    decodes ProRes alpha reliably — no transparent video is fed to Remotion.
+    Returns {"ok": True, "bytes": b"..."} or {"ok": False, "error": "..."}.
+    """
+    try:
+        with _video_slot("editor"):
+            import tempfile, os as _os, subprocess, requests as _req, shutil
+            tmp = tempfile.mkdtemp()
+            back = _os.path.join(tmp, "back.mp4")
+            front = _os.path.join(tmp, "front.mov")
+            gs = _os.path.join(tmp, "gs.mp4")
+            out = _os.path.join(tmp, "final.mp4")
+            with open(back, "wb") as f:
+                f.write(back_bytes)
+            with open(front, "wb") as f:
+                f.write(front_bytes)
+            with open(gs, "wb") as f:
+                f.write(_req.get(greenscreen_url, timeout=180).content)
+
+            audio = ""
+            if audio_url:
+                audio = _os.path.join(tmp, "audio.mp4")
+                with open(audio, "wb") as f:
+                    f.write(_req.get(audio_url, timeout=180).content)
+
+            # [1]=presenter keyed & cover-fit; overlay on back → mid; overlay front → v
+            fc = (
+                "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,chromakey=0x00B140:0.16:0.06[ck];"
+                "[0:v][ck]overlay=shortest=1[mid];"
+                "[mid][2:v]overlay=shortest=1[v]"
+            )
+            cmd = ["ffmpeg", "-y", "-i", back, "-i", gs, "-i", front]
+            if audio:
+                cmd += ["-i", audio]
+            cmd += ["-filter_complex", fc, "-map", "[v]"]
+            if audio:
+                cmd += ["-map", "3:a?"]
+            cmd += ["-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+            if proc.returncode != 0 or not _os.path.exists(out):
+                return {"ok": False, "error": (proc.stderr or "")[-400:]}
+            with open(out, "rb") as f:
+                data = f.read()
+            shutil.rmtree(tmp, ignore_errors=True)
+            return {"ok": True, "bytes": data}
+    except Exception as exc:
+        logger.error("composite_reel failed: %s", exc, exc_info=True)
+        return {"ok": False, "error": str(exc)}
+
+
+
 def greenscreen_to_transparent_video(video_url: str) -> dict:
     """
     Turn a green-screen video into a transparent-background ProRes 4444 MOV (alpha).
