@@ -227,16 +227,21 @@ def _generate_stopmotion_broll(phone: str, segments: list[dict]) -> list[str]:
             img = image_gen.generate_image(styled, aspect_ratio="2:3")
             seed = (img.get("s3_url") or img.get("url")) if img.get("ok") else None
             if not seed:
+                logger.warning("video_editor: broll seed image failed: %s", img.get("error"))
                 return ""
             seg_dur = max(2, int(round(seg["end"] - seg["start"])))
+            # p-video only renders at fps 24/48 — the stop-motion cadence is baked in post.
             vid = video_gen.generate_video_from_image(
-                seed, styled, duration=min(seg_dur, 10), aspect_ratio="9:16", fps=12)
-            if vid.get("ok") and vid.get("bytes"):
-                up = aws_storage.upload_bytes(vid["bytes"], content_type="video/mp4",
-                                              extension="mp4", folder=f"{phone}/video_editor/broll")
-                return up.get("s3_url") or vid.get("url") or ""
+                seed, styled, duration=min(seg_dur, 10), aspect_ratio="9:16", fps=24)
+            if not (vid.get("ok") and vid.get("bytes")):
+                logger.warning("video_editor: p-video failed: %s", vid.get("error"))
+                return ""
+            clip = video_gen.apply_stopmotion(vid["bytes"], step_fps=12) or vid["bytes"]
+            up = aws_storage.upload_bytes(clip, content_type="video/mp4",
+                                          extension="mp4", folder=f"{phone}/video_editor/broll")
+            return up.get("s3_url") or vid.get("url") or ""
         except Exception as exc:
-            logger.warning("video_editor: stopmotion broll failed: %s", exc)
+            logger.warning("video_editor: stopmotion broll failed: %s", exc, exc_info=True)
         return ""
 
     with ThreadPoolExecutor(max_workers=3) as ex:

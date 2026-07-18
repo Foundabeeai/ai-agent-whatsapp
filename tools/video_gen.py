@@ -97,6 +97,35 @@ def matte_video_greenscreen(video_url: str) -> dict:
 # Image-to-Video  (prunaai/p-video)
 # ---------------------------------------------------------------------------
 
+def apply_stopmotion(video_bytes: bytes, step_fps: int = 12) -> bytes | None:
+    """
+    Bake a choppy stop-motion look by dropping the clip to ~step_fps (stepped
+    frames) while keeping its duration. p-video only renders at 24/48 fps, so the
+    stop-motion cadence has to be applied in post.
+    """
+    try:
+        import tempfile, os as _os, subprocess, shutil
+        tmp = tempfile.mkdtemp()
+        src = _os.path.join(tmp, "in.mp4")
+        out = _os.path.join(tmp, "out.mp4")
+        with open(src, "wb") as f:
+            f.write(video_bytes)
+        cmd = ["ffmpeg", "-y", "-i", src,
+               "-vf", f"fps={step_fps}", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-preset", "veryfast", "-an", out]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0 or not _os.path.exists(out):
+            logger.warning("apply_stopmotion failed: %s", (proc.stderr or "")[-200:])
+            return None
+        with open(out, "rb") as f:
+            data = f.read()
+        shutil.rmtree(tmp, ignore_errors=True)
+        return data
+    except Exception as exc:
+        logger.warning("apply_stopmotion error: %s", exc)
+        return None
+
+
 def generate_video_from_image(
     image_url: str,
     prompt: str,
@@ -111,6 +140,14 @@ def generate_video_from_image(
     """
     if not config.REPLICATE_API_TOKEN:
         return {"ok": False, "error": "REPLICATE_API_TOKEN not set"}
+    # p-video only accepts a fixed set of values — coerce so a bad arg can't make
+    # the whole prediction fail silently.
+    fps = 24 if int(fps) <= 36 else 48
+    duration = max(1, min(int(duration), 20))
+    if aspect_ratio not in ("16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "1:1"):
+        aspect_ratio = "9:16"
+    if resolution not in ("720p", "1080p"):
+        resolution = "720p"
     try:
         prediction = _replicate.predictions.create(
             model=_P_VIDEO_MODEL,
