@@ -11,6 +11,7 @@ const DEFAULT_PROPS = {
   durationInFrames: 360,
   layer: 'all' as const,
   presenterSrc: '',
+  bgVideo: '',
   captionPos: 'bottom' as const,
   scenes: [] as unknown[],
   words: [] as {start: number; end: number; text: string}[],

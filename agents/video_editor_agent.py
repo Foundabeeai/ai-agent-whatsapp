@@ -275,23 +275,29 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
         # 1) Map segments → designed scenes
         scenes = _plan_to_scenes(segments, duration)
 
-        # 2) Render the two Remotion graphics layers (no transparent video INTO
-        #    Remotion — that hangs on the server; ffmpeg composites the presenter).
+        # 2) Remotion back plate: designed backgrounds + big-text (opaque h264)
         _send(phone, {"kind": "text", "text": "🎨 Designing your backgrounds and big text…"})
         back = remotion_render.render_layer(scenes, words, duration, layer="back", caption_pos="bottom")
         if not back.get("ok") or not back.get("bytes"):
             raise RuntimeError(f"back-layer render failed: {back.get('error')}")
 
-        _send(phone, {"kind": "text", "text": "✏️ Adding captions, doodles and effects…"})
-        front = remotion_render.render_layer(scenes, words, duration, layer="front", caption_pos="bottom")
-        if not front.get("ok") or not front.get("bytes"):
-            raise RuntimeError(f"front-layer render failed: {front.get('error')}")
+        # 3) ffmpeg: chroma-key the presenter over the back plate → opaque mid.mp4
+        _send(phone, {"kind": "text", "text": "🟢 Cutting you out over the background…"})
+        mid = video_gen.key_presenter_over(back["bytes"], gs_url, src_url)
+        if not mid.get("ok") or not mid.get("bytes"):
+            raise RuntimeError(f"presenter composite failed: {mid.get('error')}")
+        mu = aws_storage.upload_bytes(mid["bytes"], content_type="video/mp4",
+                                      extension="mp4", folder=f"{phone}/video_editor")
+        mid_url = mu.get("s3_url") or mu.get("permanent_url")
+        if not mid_url:
+            raise RuntimeError("mid upload failed")
 
-        # 3) ffmpeg: chroma-key the presenter and sandwich between back & front
-        _send(phone, {"kind": "text", "text": "🎬 Compositing your reel — cuts, presenter and captions…"})
-        out = video_gen.composite_reel(back["bytes"], front["bytes"], gs_url, src_url)
+        # 4) Remotion front pass: mid video + doodles + lens + captions (opaque h264)
+        _send(phone, {"kind": "text", "text": "✏️ Adding captions, doodles and effects…"})
+        out = remotion_render.render_layer(scenes, words, duration, layer="front",
+                                           bg_video=mid_url, caption_pos="bottom")
         if not out.get("ok") or not out.get("bytes"):
-            raise RuntimeError(out.get("error") or "composite returned nothing")
+            raise RuntimeError(f"front-layer render failed: {out.get('error')}")
 
         final_bytes = out["bytes"]
         logger.info("video_editor: final reel %.1f MB", len(final_bytes) / 1e6)

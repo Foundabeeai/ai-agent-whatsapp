@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill, Sequence, useVideoConfig} from 'remotion';
+import {AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig} from 'remotion';
 import {z} from 'zod';
 import {SceneBackground} from './backgrounds';
 import {ArrowsRing, ScribbleCircle, BigTextBehind, LensVignette, WordCaptions} from './graphics';
@@ -25,11 +25,12 @@ export const captionedVideoSchema = z.object({
   width: z.number(),
   height: z.number(),
   durationInFrames: z.number(),
-  // "back"  = opaque backgrounds + big-text-behind (presenter goes on top of this)
-  // "front" = doodles + lens + captions + grain, TRANSPARENT (overlaid on presenter)
-  // "all"   = everything incl. presenter (Studio preview only)
+  // "back"  = opaque backgrounds + big-text-behind (presenter is keyed over this by ffmpeg)
+  // "front" = the composited bgVideo (back+presenter) + doodles + lens + captions + grain
+  // "all"   = everything (Studio preview only)
   layer: z.enum(['all', 'back', 'front']).optional().default('all'),
   presenterSrc: z.string().optional().default(''),
+  bgVideo: z.string().optional().default(''),
   scenes: z.array(sceneSchema).default([]),
   words: z.array(z.object({start: z.number(), end: z.number(), text: z.string()})).default([]),
   captionPos: z.enum(['top', 'bottom']).optional().default('bottom'),
@@ -37,15 +38,18 @@ export const captionedVideoSchema = z.object({
 
 export type CaptionedVideoProps = z.infer<typeof captionedVideoSchema>;
 
-export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, captionPos, layer}) => {
+export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, captionPos, layer, bgVideo}) => {
   const {fps} = useVideoConfig();
   const showBack = layer === 'all' || layer === 'back';
   const showFront = layer === 'all' || layer === 'front';
-  // Front layer must be transparent so it can be overlaid on the keyed presenter.
-  const bg = layer === 'front' ? 'transparent' : 'black';
 
   return (
-    <AbsoluteFill style={{backgroundColor: bg}}>
+    <AbsoluteFill style={{backgroundColor: 'black'}}>
+      {/* ── FRONT base: the composited back+presenter video (opaque) ── */}
+      {layer === 'front' && bgVideo ? (
+        <OffthreadVideo src={bgVideo} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+      ) : null}
+
       {/* ── BACK: designed backgrounds + giant text behind the subject ── */}
       {showBack &&
         scenes.map((s, i) => {

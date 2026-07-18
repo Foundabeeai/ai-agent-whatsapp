@@ -35,6 +35,7 @@ def render_layer(
     words: list[dict],
     duration_sec: float,
     layer: str = "back",
+    bg_video: str = "",
     fps: int = 24,
     width: int = 1080,
     height: int = 1920,
@@ -42,25 +43,26 @@ def render_layer(
     timeout: int = 1200,
 ) -> dict:
     """
-    Render ONE graphics layer of the Hormozi-style reel in Remotion — no presenter
-    video is fed to Remotion (transparent *input* video hangs on the server).
+    Render ONE graphics layer of the Hormozi-style reel in Remotion. Only OPAQUE
+    video is ever fed to Remotion (transparent *input* hangs; transparent *output*
+    ProRes blows the disk) — the presenter is chroma-keyed by ffmpeg in between.
       layer="back"  → opaque backgrounds + big-text-behind (h264 mp4)
-      layer="front" → doodles + lens + captions + grain, TRANSPARENT (ProRes 4444 mov)
-    The presenter is chroma-keyed and sandwiched between these two layers by ffmpeg.
-    Returns {"ok": True, "bytes": b"...", "ext": "mp4|mov"} or {"ok": False, "error": "..."}.
+      layer="front" → bg_video (back+presenter, opaque) + doodles + lens + captions (h264 mp4)
+    Returns {"ok": True, "bytes": b"...", "ext": "mp4"} or {"ok": False, "error": "..."}.
     """
     if not _deps_ready():
         return {"ok": False, "error": "remotion deps not installed (run npm install in remotion/)"}
     if not scenes:
         return {"ok": False, "error": "no scenes to render"}
 
-    transparent = (layer == "front")
+    transparent = False  # everything is opaque h264 now
     props = {
         "fps": int(fps),
         "width": int(width),
         "height": int(height),
         "durationInFrames": max(1, int(round(duration_sec * fps))),
         "layer": layer,
+        "bgVideo": bg_video or "",
         "captionPos": caption_pos if caption_pos in ("top", "bottom") else "bottom",
         "scenes": [
             {
