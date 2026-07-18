@@ -2,7 +2,7 @@ import React from 'react';
 import {AbsoluteFill, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
 import {z} from 'zod';
 import {SceneBackground} from './backgrounds';
-import {ArrowsRing, ScribbleCircle, BigTextBehind, LensVignette, WordCaptions} from './graphics';
+import {ArrowsRing, ScribbleCircle, Underline, BigTextBehind, LensVignette, WordCaptions} from './graphics';
 import {FilmGrain, CutFlash} from './effects';
 
 const sceneSchema = z.object({
@@ -14,7 +14,7 @@ const sceneSchema = z.object({
   brollSrc: z.string().optional().default(''),
   presenter: z.enum(['full', 'sticker', 'none']).default('full'),
   bigText: z.string().optional().default(''),
-  doodle: z.enum(['arrows', 'circle', 'none']).default('none'),
+  doodle: z.enum(['arrows', 'circle', 'underline', 'none']).default('none'),
   zoom: z.string().optional().default('none'),
   lens: z.boolean().optional().default(false),
   emphasis: z.boolean().optional().default(false),
@@ -127,6 +127,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
               <AbsoluteFill>
                 {s.doodle === 'arrows' ? <ArrowsRing /> : null}
                 {s.doodle === 'circle' ? <ScribbleCircle /> : null}
+                {s.doodle === 'underline' ? <Underline position={captionPos} /> : null}
                 {s.lens ? <LensVignette /> : null}
               </AbsoluteFill>
             </Sequence>

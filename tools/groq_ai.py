@@ -1649,26 +1649,38 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
     import json as _json, re as _re
     target_segments = max(3, min(8, int(duration_sec // 4) or 3))
     system = (
-        "You are a viral short-form video editor (Instagram Reels / TikTok). Given a transcript "
-        "of someone talking to camera, produce an EDIT PLAN that turns it into a trending cut with "
-        "B-roll behind them, punchy captions, and zoom emphasis.\n"
+        "You are a viral short-form video editor (Instagram Reels / TikTok) in the high-retention "
+        "'Hormozi' style. Given a transcript of someone talking to camera, produce an EDIT PLAN. "
+        "The person is cut out over AI stop-motion B-roll, with kinetic captions and hand-drawn "
+        "graphic overlays. YOU decide the overlays per beat so every video feels uniquely edited — "
+        "do NOT apply the same treatment to every segment; vary them to match the meaning and energy.\n"
         "Rules:\n"
-        f"- Break the video into about {target_segments} segments covering 0..{duration_sec:.1f}s, "
-        "contiguous, non-overlapping.\n"
-        "- For each segment: a B-roll prompt (cinematic, relevant to what's being said, no text/logos), "
-        "a zoom move (in for emphasis, out to breathe, none), one SHORT caption (max 6 words) matching "
-        "what they say in that beat, and an optional emphasis overlay (a stat, keyword, or icon idea).\n"
-        "- Keep it authentic to the transcript — don't invent facts.\n"
-        "- Output ONLY valid JSON matching the schema. No markdown."
+        f"- Break the video into about {target_segments} contiguous, non-overlapping segments "
+        f"covering 0..{duration_sec:.1f}s.\n"
+        "- Each segment needs:\n"
+        "  • broll_prompt: cinematic stop-motion B-roll relevant to what's said (no text/logos)\n"
+        "  • caption: SHORT (max 6 words), matching what they say in that beat\n"
+        "  • zoom: 'in' (build tension), 'out' (reveal/breathe), 'punch' (hard emphasis), or 'none'\n"
+        "  • doodle: a hand-drawn overlay chosen for MEANING — 'arrows' (hype/point at them, big claim), "
+        "'circle' (spotlight/highlight one thing), 'underline' (drive home a key caption), or 'none' "
+        "(let a calm/serious beat breathe). Use variety across the video; not every beat needs one.\n"
+        "  • big_text: 1-2 word ALL-CAPS phrase to slam BEHIND the subject for a punchy keyword moment, "
+        "else \"\" (use sparingly, only on the 1-3 biggest beats)\n"
+        "  • lens: true only for a rare intense 'through-the-scope' moment, else false\n"
+        "  • peak: true if this is a climax/punchline beat (gets a harder zoom), else false\n"
+        "- Think like an editor: hook beats get arrows or big_text, explanation beats stay clean, "
+        "the payoff beat gets a punch zoom. Keep it authentic — don't invent facts.\n"
+        "- Output ONLY valid JSON. No markdown."
     )
     user = (
         f"Brand: {brand.get('brand_name') or ''} | Voice: {brand.get('brand_voice') or 'energetic'}\n"
         f"Video duration: {duration_sec:.1f}s\n"
         f"Transcript:\n{transcript}\n\n"
         'Return JSON: {"title":"...","story":"...","segments":[{"start":0,"end":4,'
-        '"broll_prompt":"...","zoom":"in","caption":"...","emphasis":"..."}],"cta":"..."}'
+        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"arrows","big_text":"","lens":false,'
+        '"peak":false}],"cta":"..."}'
     )
-    raw = _chat(system, user, temperature=0.6, max_tokens=2000)
+    raw = _chat(system, user, temperature=0.7, max_tokens=2200)
     try:
         clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
         data = _json.loads(clean)
@@ -1683,7 +1695,8 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
             "segments": [{
                 "start": 0.0, "end": float(duration_sec or 15),
                 "broll_prompt": f"cinematic b-roll for {brand.get('brand_description') or 'the topic'}",
-                "zoom": "none", "caption": "", "emphasis": "",
+                "caption": "", "zoom": "none", "doodle": "none", "big_text": "",
+                "lens": False, "peak": False,
             }],
             "cta": "Follow for more",
         }

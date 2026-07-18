@@ -88,6 +88,35 @@ export const ScribbleCircle: React.FC<{color?: string}> = ({color = '#FFD400'}) 
   );
 };
 
+// ── Hand-drawn marker underline that sweeps on beneath the caption ──────────
+export const Underline: React.FC<{color?: string; position?: 'top' | 'bottom'}> = ({
+  color = '#FFE600',
+  position = 'bottom',
+}) => {
+  const frame = useCurrentFrame();
+  const {fps, width, height} = useVideoConfig();
+  const draw = spring({frame, fps, config: {damping: 200}, durationInFrames: 12});
+  const y = position === 'top' ? height * 0.24 : height * 0.80;
+  const x0 = width * 0.22;
+  const x1 = width * 0.78;
+  // slight double-stroke swoosh with a wobble
+  const d = `M ${x0} ${y} C ${width * 0.4} ${y + 22}, ${width * 0.6} ${y - 18}, ${x1} ${y}`;
+  const dash = 1000;
+  return (
+    <AbsoluteFill style={{pointerEvents: 'none'}}>
+      <svg width="100%" height="100%">
+        <g style={{filter: 'drop-shadow(0 4px 5px rgba(0,0,0,0.4))'}}>
+          <path d={d} fill="none" stroke={color} strokeWidth={16} strokeLinecap="round"
+            strokeDasharray={dash} strokeDashoffset={dash * (1 - draw)} />
+          <path d={d} fill="none" stroke={color} strokeWidth={7} strokeLinecap="round" opacity={0.8}
+            transform={`translate(0 ${14})`}
+            strokeDasharray={dash} strokeDashoffset={dash * (1 - Math.max(0, draw - 0.12))} />
+        </g>
+      </svg>
+    </AbsoluteFill>
+  );
+};
+
 // ── Giant kinetic word(s) sitting BEHIND the presenter ──────────────────────
 export const BigTextBehind: React.FC<{text: string; color?: string; shadow?: string}> = ({
   text,

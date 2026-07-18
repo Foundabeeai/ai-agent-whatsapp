@@ -248,32 +248,47 @@ def _generate_stopmotion_broll(phone: str, segments: list[dict]) -> list[str]:
         return list(ex.map(_gen, segments))
 
 
+_DOODLES = ("arrows", "circle", "underline", "none")
+_ZOOMS = ("in", "out", "punch", "none")
+
+
 def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]) -> list[dict]:
     """
-    Turn the edit-plan segments into scenes. The background is the stop-motion
-    B-roll video when available; otherwise a designed background (grid/solid/…).
-    Doodles, lens, big-text and ≥25% cut zooms are layered on top.
+    Turn the edit-plan segments into scenes. The LLM chooses the per-scene overlays
+    (doodle / big-text / zoom / lens / peak) so every reel is edited differently;
+    we only fall back to a rotating default when the LLM left a field unset/invalid.
+    Background = stop-motion B-roll video when available, else a designed background.
     """
     scenes: list[dict] = []
     solid_i = 0
     for i, seg in enumerate(segments):
-        emphasis = bool(seg.get("emphasis"))
         cap = (seg.get("caption") or "").strip()
-        big_words = " ".join(cap.split()[:2]).upper() if cap else ""
         broll = broll_urls[i] if i < len(broll_urls) else ""
-        zoom = "punch" if emphasis else _ZOOM_CYCLE[i % len(_ZOOM_CYCLE)]
+        peak = bool(seg.get("peak") or seg.get("emphasis"))
 
-        # doodle rotates so cuts feel varied (arrows / circle / none)
-        doodle = ("arrows", "none", "circle", "none")[i % 4]
+        # ── LLM-chosen styling, validated; deterministic fallback if missing ──
+        doodle = str(seg.get("doodle", "")).lower().strip()
+        if doodle not in _DOODLES:
+            doodle = ("arrows", "none", "circle", "none")[i % 4]
+
+        zoom = str(seg.get("zoom", "")).lower().strip()
+        if zoom not in _ZOOMS:
+            zoom = _ZOOM_CYCLE[i % len(_ZOOM_CYCLE)]
+        if peak and zoom in ("none", ""):
+            zoom = "punch"
+
+        big_llm = str(seg.get("big_text", "")).strip().upper()
+        big_fallback = " ".join(cap.split()[:2]).upper() if cap else ""
+        lens = bool(seg.get("lens", False))
 
         scene = {
             "start": seg["start"], "end": seg["end"],
             "presenter": "full",
             "doodle": doodle,
-            "lens": (i % 4 == 0),
+            "lens": lens,
             "zoom": zoom,
-            "emphasis": emphasis,
-            "bigText": big_words if (emphasis and not broll) else "",
+            "emphasis": peak,
+            "bigText": big_llm,   # over video: only what the LLM explicitly asked for
             "color": "", "color2": "",
         }
         if broll:
@@ -288,8 +303,9 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
             elif bg == "split":
                 scene["color"] = "#EDE6D6"
                 scene["color2"] = "#E7B10A"
+            # designed bgs look great with a big keyword; use LLM's or a fallback
             if bg in ("solid", "split"):
-                scene["bigText"] = big_words
+                scene["bigText"] = big_llm or big_fallback
         scenes.append(scene)
     return scenes
 
