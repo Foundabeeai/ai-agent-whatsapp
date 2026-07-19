@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
+import {AbsoluteFill, Audio, OffthreadVideo, Sequence, staticFile, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
 import {z} from 'zod';
 import {SceneBackground} from './backgrounds';
 import {BigTextBehind, LensVignette, WordCaptions} from './graphics';
@@ -8,7 +8,7 @@ import {Infographic} from './infographics';
 import {FilmGrain, CutFlash, WhipSwipe, GlitchBurst, useShake} from './effects';
 
 const DOODLES = ['none', 'arrow', 'arrows', 'circle', 'underline', 'highlighter', 'box', 'brackets', 'stars', 'action_lines', 'check', 'cross'] as const;
-const INFO_TYPES = ['none', 'counter', 'progress', 'ring', 'stat'] as const;
+const INFO_TYPES = ['none', 'counter', 'progress', 'ring', 'stat', 'callout'] as const;
 const TRANSITIONS = ['none', 'flash', 'whip', 'glitch', 'shake'] as const;
 
 const sceneSchema = z.object({
@@ -27,6 +27,7 @@ const sceneSchema = z.object({
     value: z.number().optional().default(0),
     label: z.string().optional().default(''),
     suffix: z.string().optional().default(''),
+    icon: z.string().optional().default(''),
   }).optional(),
   transition: z.enum(TRANSITIONS).optional().default('flash'),
   zoom: z.string().optional().default('none'),
@@ -77,7 +78,7 @@ const ZoomedShot: React.FC<{
       <OffthreadVideo
         src={src}
         startFrom={startFrom}
-        muted={false}
+        muted
         style={{width: '100%', height: '100%', objectFit: 'cover', transform: `translate(${sh.x}px, ${sh.y}px) scale(${scale})`}}
       />
     </AbsoluteFill>
@@ -143,7 +144,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
               <AbsoluteFill>
                 {s.lens ? <LensVignette /> : null}
                 {s.doodle !== 'none' ? <Doodle kind={s.doodle} captionPos={captionPos} /> : null}
-                {info ? <Infographic type={info.type} value={info.value || 0} label={info.label} suffix={info.suffix} /> : null}
+                {info ? <Infographic type={info.type} value={info.value || 0} label={info.label} suffix={info.suffix} icon={info.icon} /> : null}
                 {showEmoji ? <EmojiPop emoji={s.emoji} slot={slot} /> : null}
               </AbsoluteFill>
             </Sequence>
@@ -163,6 +164,30 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
               <TransitionFx kind={kind} />
             </Sequence>
           );
+        })}
+
+      {/* ── FRONT: sound effects — whoosh on cuts, pop on element reveals ── */}
+      {showFront &&
+        scenes.map((s, i) => {
+          const cutF = Math.round(s.start * fps);
+          const hasEl = s.doodle !== 'none' || (s.info && s.info.type !== 'none') || !!s.emoji || !!s.bigText;
+          const sfx: React.ReactNode[] = [];
+          if (i > 0 && s.transition !== 'none') {
+            const file = s.transition === 'shake' ? 'impact.mp3' : 'whoosh.mp3';
+            sfx.push(
+              <Sequence key={`sw${i}`} from={Math.max(0, cutF - 3)} durationInFrames={16}>
+                <Audio src={staticFile(`sfx/${file}`)} volume={0.5} />
+              </Sequence>
+            );
+          }
+          if (hasEl) {
+            sfx.push(
+              <Sequence key={`pp${i}`} from={cutF} durationInFrames={12}>
+                <Audio src={staticFile('sfx/pop.mp3')} volume={0.45} />
+              </Sequence>
+            );
+          }
+          return sfx;
         })}
 
       {/* ── FRONT: film grain + kinetic word captions ── */}

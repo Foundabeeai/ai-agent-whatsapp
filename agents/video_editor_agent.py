@@ -252,9 +252,9 @@ _DOODLES = ("none", "arrow", "arrows", "circle", "underline", "highlighter",
             "box", "brackets", "stars", "action_lines", "check", "cross")
 _ZOOMS = ("in", "out", "punch", "none")
 _TRANSITIONS = ("none", "flash", "whip", "glitch", "shake")
-_INFO_TYPES = ("none", "counter", "progress", "ring", "stat")
+_INFO_TYPES = ("none", "counter", "progress", "ring", "stat", "callout")
 # Varied fallbacks — mostly clean beats (less-is-more) so it never feels busy
-_DOODLE_FALLBACK = ("arrow", "none", "none", "action_lines", "none", "underline", "none", "stars")
+_DOODLE_FALLBACK = ("none", "arrow", "none", "action_lines", "none", "underline", "none", "stars")
 _TRANS_FALLBACK = ("flash", "whip", "flash", "glitch", "flash", "whip")
 
 
@@ -306,15 +306,20 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
 
         emoji = str(seg.get("emoji", "") or "").strip()[:4]
 
-        # infographic — only pass through a valid, numeric one
+        # infographic — validate; 'callout' needs an icon/label, data types a value
         info = seg.get("info") or {}
         info_type = str(info.get("type", "none")).lower().strip()
         if info_type not in _INFO_TYPES or info_type == "none":
             info_out = {"type": "none"}
+        elif info_type == "callout":
+            icon = str(info.get("icon", "") or "").strip()[:4]
+            lbl = str(info.get("label", "")).strip()[:22]
+            info_out = {"type": "callout", "icon": icon, "label": lbl, "value": 0, "suffix": ""} if (icon or lbl) else {"type": "none"}
         else:
             try:
                 info_out = {"type": info_type, "value": float(info.get("value") or 0),
-                            "label": str(info.get("label", ""))[:24], "suffix": str(info.get("suffix", ""))[:4]}
+                            "label": str(info.get("label", ""))[:22], "suffix": str(info.get("suffix", ""))[:4],
+                            "icon": ""}
             except Exception:
                 info_out = {"type": "none"}
 
@@ -424,7 +429,8 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
         if not out.get("ok") or not out.get("bytes"):
             raise RuntimeError(f"front-layer render failed: {out.get('error')}")
 
-        final_bytes = out["bytes"]
+        # 5) Guarantee sound: mux the original voice (+ SFX) onto the final video.
+        final_bytes = video_gen.finalize_audio(out["bytes"], src_url) or out["bytes"]
         logger.info("video_editor: final reel %.1f MB", len(final_bytes) / 1e6)
         # WhatsApp media cap is 16 MB — compress if we're over so it actually sends.
         if len(final_bytes) > 15 * 1024 * 1024:

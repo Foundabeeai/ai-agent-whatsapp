@@ -21,17 +21,38 @@ export const Counter: React.FC<{value: number; label?: string; suffix?: string}>
   const n = Math.round(value * count);
   return (
     <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center', pointerEvents: 'none'}}>
-      <div style={{marginTop: '15%', transform: `translateY(${interpolate(pop, [0, 1], [40, 0])}px) scale(${interpolate(pop, [0, 1], [0.8, 1])})`,
+      <div style={{marginTop: '7%', transform: `translateY(${interpolate(pop, [0, 1], [40, 0])}px) scale(${interpolate(pop, [0, 1], [0.8, 1])})`,
         textAlign: 'center', filter: 'drop-shadow(0 16px 30px rgba(0,0,0,0.5))'}}>
-        <div style={{...num900, fontSize: 210, color: '#fff', lineHeight: 0.9,
+        <div style={{...num900, fontSize: 160, color: '#fff', lineHeight: 0.9,
           textShadow: '0 6px 0 rgba(0,0,0,0.25)'}}>
           {fmt(n)}{suffix || ''}
         </div>
         {label ? (
-          <div style={{...lab800, display: 'inline-block', marginTop: 18, fontSize: 44, color: '#07110B',
-            background: ACCENT, textTransform: 'uppercase', padding: '10px 26px', borderRadius: 999,
+          <div style={{...lab800, display: 'inline-block', marginTop: 14, fontSize: 40, color: '#07110B',
+            background: ACCENT, textTransform: 'uppercase', padding: '9px 24px', borderRadius: 999,
             boxShadow: '0 10px 22px rgba(0,0,0,0.3)'}}>{label}</div>
         ) : null}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+// ── Icon callout — a clean pill card with an emoji icon + label (no number) ──
+// The versatile "infographic" for qualitative points; sits in the top band,
+// well clear of the face.
+export const Callout: React.FC<{icon?: string; label?: string}> = ({icon, label}) => {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const pop = spring({frame, fps, config: {damping: 13, mass: 0.7}, durationInFrames: 12});
+  const y = interpolate(pop, [0, 1], [-60, 0]);
+  return (
+    <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center', pointerEvents: 'none'}}>
+      <div style={{marginTop: '8%', transform: `translateY(${y}px) scale(${interpolate(pop, [0, 1], [0.85, 1])})`,
+        display: 'flex', alignItems: 'center', gap: 20, background: 'rgba(255,255,255,0.97)',
+        borderRadius: 999, padding: '16px 34px 16px 24px', boxShadow: '0 20px 44px rgba(0,0,0,0.5)',
+        maxWidth: '84%'}}>
+        {icon ? <span style={{fontSize: 80, lineHeight: 1}}>{icon}</span> : null}
+        {label ? <span style={{...lab800, fontSize: 52, color: '#0A0A0A', textTransform: 'uppercase'}}>{label}</span> : null}
       </div>
     </AbsoluteFill>
   );
@@ -70,7 +91,7 @@ export const PercentRing: React.FC<{value: number; label?: string}> = ({value, l
   const p = spring({frame, fps, config: {damping: 200}, durationInFrames: Math.round(fps)});
   const pop = spring({frame, fps, config: {damping: 13}, durationInFrames: 10});
   const pct = Math.max(0, Math.min(100, value)) * p;
-  const cx = width / 2, cy = height * 0.3, r = 165, C = 2 * Math.PI * r;
+  const cx = width / 2, cy = height * 0.22, r = 135, C = 2 * Math.PI * r;
   return (
     <AbsoluteFill style={{pointerEvents: 'none', transform: `scale(${interpolate(pop, [0, 1], [0.85, 1])})`,
       transformOrigin: `${cx}px ${cy}px`}}>
@@ -85,7 +106,7 @@ export const PercentRing: React.FC<{value: number; label?: string}> = ({value, l
           <circle cx={cx} cy={cy} r={r} fill="none" stroke="url(#ringgrad)" strokeWidth={40} strokeLinecap="round"
             strokeDasharray={C} strokeDashoffset={C * (1 - pct / 100)} style={{filter: 'drop-shadow(0 8px 16px rgba(0,0,0,0.4))'}} />
         </g>
-        <text x={cx} y={cy + 34} textAnchor="middle" style={{...num900, fontSize: 130, fill: '#fff'}}>{Math.round(pct)}%</text>
+        <text x={cx} y={cy + 30} textAnchor="middle" style={{...num900, fontSize: 105, fill: '#fff'}}>{Math.round(pct)}%</text>
       </svg>
       {label ? (
         <div style={{position: 'absolute', top: cy + r - 6, left: 0, right: 0, textAlign: 'center'}}>
@@ -107,25 +128,26 @@ export const StatCard: React.FC<{value: number; label?: string; suffix?: string}
   const n = Math.round(value * count);
   return (
     <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center', pointerEvents: 'none'}}>
-      <div style={{marginTop: '15%', transform: `translateY(${y}px) scale(${interpolate(pop, [0, 1], [0.86, 1])})`,
-        borderRadius: 34, overflow: 'hidden', boxShadow: '0 26px 60px rgba(0,0,0,0.5)', textAlign: 'center',
-        background: 'rgba(255,255,255,0.96)', minWidth: 460}}>
-        <div style={{height: 16, background: ACCENT}} />
-        <div style={{padding: '30px 52px 38px'}}>
-          <div style={{...num900, fontSize: 140, color: '#0A0A0A', lineHeight: 0.95}}>{fmt(n)}{suffix || ''}</div>
-          {label ? <div style={{...lab800, fontSize: 40, color: '#6B7280', textTransform: 'uppercase', marginTop: 8}}>{label}</div> : null}
+      <div style={{marginTop: '7%', transform: `translateY(${y}px) scale(${interpolate(pop, [0, 1], [0.86, 1])})`,
+        borderRadius: 30, overflow: 'hidden', boxShadow: '0 26px 60px rgba(0,0,0,0.5)', textAlign: 'center',
+        background: 'rgba(255,255,255,0.96)', minWidth: 400}}>
+        <div style={{height: 14, background: ACCENT}} />
+        <div style={{padding: '24px 46px 30px'}}>
+          <div style={{...num900, fontSize: 110, color: '#0A0A0A', lineHeight: 0.95}}>{fmt(n)}{suffix || ''}</div>
+          {label ? <div style={{...lab800, fontSize: 36, color: '#6B7280', textTransform: 'uppercase', marginTop: 6}}>{label}</div> : null}
         </div>
       </div>
     </AbsoluteFill>
   );
 };
 
-export const Infographic: React.FC<{type: string; value: number; label?: string; suffix?: string}> = ({type, value, label, suffix}) => {
+export const Infographic: React.FC<{type: string; value: number; label?: string; suffix?: string; icon?: string}> = ({type, value, label, suffix, icon}) => {
   switch (type) {
     case 'counter': return <Counter value={value} label={label} suffix={suffix} />;
     case 'progress': return <ProgressBar value={value} label={label} />;
     case 'ring': return <PercentRing value={value} label={label} />;
     case 'stat': return <StatCard value={value} label={label} suffix={suffix} />;
+    case 'callout': return <Callout icon={icon} label={label} />;
     default: return null;
   }
 };

@@ -883,6 +883,53 @@ def compress_for_whatsapp(video_bytes: bytes, target_mb: float = 14.0) -> bytes 
 
 
 
+def finalize_audio(video_bytes: bytes, voice_url: str) -> bytes | None:
+    """
+    Guarantee the final reel has sound: mux the ORIGINAL voice audio onto the
+    Remotion front render (whose video track is muted but carries SFX). If the
+    render has an SFX track, mix voice + SFX; otherwise just add the voice.
+    Deterministic — never relies on Remotion carrying the presenter audio.
+    """
+    try:
+        import tempfile, os as _os, subprocess, requests as _req, shutil
+        tmp = tempfile.mkdtemp()
+        vid = _os.path.join(tmp, "v.mp4")
+        voice = _os.path.join(tmp, "voice.mp4")
+        out = _os.path.join(tmp, "final.mp4")
+        with open(vid, "wb") as f:
+            f.write(video_bytes)
+        with open(voice, "wb") as f:
+            f.write(_req.get(voice_url, timeout=180).content)
+
+        # does the render carry an SFX audio track?
+        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                                "-show_entries", "stream=index", "-of", "csv=p=0", vid],
+                               capture_output=True, text=True)
+        has_sfx = bool((probe.stdout or "").strip())
+
+        if has_sfx:
+            fc = ("[1:a]volume=1.0[voc];[0:a]volume=0.9[sfx];"
+                  "[voc][sfx]amix=inputs=2:duration=first:normalize=0[a]")
+            cmd = ["ffmpeg", "-y", "-i", vid, "-i", voice, "-filter_complex", fc,
+                   "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+                   "-shortest", "-movflags", "+faststart", out]
+        else:
+            cmd = ["ffmpeg", "-y", "-i", vid, "-i", voice, "-map", "0:v", "-map", "1:a",
+                   "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest",
+                   "-movflags", "+faststart", out]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0 or not _os.path.exists(out):
+            logger.warning("finalize_audio failed: %s", (proc.stderr or "")[-300:])
+            return None
+        with open(out, "rb") as f:
+            data = f.read()
+        shutil.rmtree(tmp, ignore_errors=True)
+        return data
+    except Exception as exc:
+        logger.warning("finalize_audio error: %s", exc)
+        return None
+
+
 def key_presenter_over(back_bytes: bytes, greenscreen_url: str, audio_url: str = "") -> dict:
     """
     Chroma-key the green-screen presenter and overlay it (cover-fit) onto the

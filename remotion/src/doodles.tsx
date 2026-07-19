@@ -14,16 +14,18 @@ const usePop = (dur = 10, delay = 0) => {
 };
 const shadow = 'drop-shadow(0 4px 6px rgba(0,0,0,0.45))';
 
-// ── Single bold arrow pointing in from a corner (clean, confident) ──────────
+// ── Single bold arrow pointing UP at the subject from the lower-left ─────────
+// Sits low and to the side so it never covers the face (upper-centre) or the
+// centered captions.
 export const BigArrow: React.FC<{color?: string}> = ({color = '#FFE600'}) => {
   const {width, height} = useVideoConfig();
   const draw = useDraw(12);
   const frame = useCurrentFrame();
-  const wob = 2 * Math.sin(frame / 6);
-  // curved shaft from lower-left toward centre-right of the subject
-  const x0 = width * 0.12, y0 = height * 0.7;
-  const x1 = width * 0.44, y1 = height * 0.5;
-  const d = `M ${x0} ${y0} C ${x0 + 60} ${y0 - 120}, ${x1 - 140} ${y1 + 90}, ${x1} ${y1 + wob}`;
+  const wob = 3 * Math.sin(frame / 6);
+  // shaft curves up from the bottom-left toward the subject's body/shoulder
+  const x0 = width * 0.14, y0 = height * 0.82;
+  const x1 = width * 0.30, y1 = height * 0.56;
+  const d = `M ${x0} ${y0} C ${x0 - 30} ${y0 - 140}, ${x1 - 70} ${y1 + 150}, ${x1 + wob} ${y1}`;
   const dash = 1400;
   const head = usePop(9, 8);
   return (
@@ -31,7 +33,7 @@ export const BigArrow: React.FC<{color?: string}> = ({color = '#FFE600'}) => {
       <svg width="100%" height="100%">
         <g style={{filter: shadow}} fill="none" stroke={color} strokeLinecap="round" strokeLinejoin="round">
           <path d={d} strokeWidth={22} strokeDasharray={dash} strokeDashoffset={dash * (1 - draw)} />
-          <g transform={`translate(${x1} ${y1 + wob}) rotate(-20) scale(${head})`}>
+          <g transform={`translate(${x1 + wob} ${y1}) rotate(-108) scale(${head})`}>
             <path d="M -46 -34 L 0 0 L -46 34" strokeWidth={22} />
           </g>
         </g>
