@@ -66,12 +66,13 @@ export const ArrowsRing: React.FC<{color?: string}> = ({color = '#ffffff'}) => {
   return <AbsoluteFill style={{pointerEvents: 'none'}}><svg width="100%" height="100%">{items}</svg></AbsoluteFill>;
 };
 
-// ── Clean hand-drawn circle highlight (single confident loop + overshoot) ───
+// ── Clean hand-drawn circle highlight around the presenter's face/upper body ─
 export const CircleHighlight: React.FC<{color?: string}> = ({color = '#FF3B3B'}) => {
   const {width, height} = useVideoConfig();
   const draw = useDraw(16);
-  const cx = width / 2, cy = height * 0.46;
-  const rx = width * 0.36, ry = height * 0.27;
+  // Full-frame talking head → face sits in the upper-centre. Frame head+shoulders.
+  const cx = width / 2, cy = height * 0.34;
+  const rx = width * 0.34, ry = height * 0.23;
   let d = '';
   const steps = 80;
   for (let i = 0; i <= steps; i++) {
@@ -143,24 +144,26 @@ export const HandBox: React.FC<{color?: string}> = ({color = '#ffffff'}) => {
   );
 };
 
-// ── Camera corner brackets ──────────────────────────────────────────────────
+// ── Camera focus brackets framing the presenter's face/upper body ───────────
 export const CornerBrackets: React.FC<{color?: string}> = ({color = '#FFE600'}) => {
   const {width, height} = useVideoConfig();
   const s = usePop(12);
-  const len = 150 * s, t = 12, inset = 90;
-  const B = (x: number, y: number, sx: number, sy: number, k: string) => (
+  const len = 130 * s, t = 12;
+  // A box around the upper-centre subject rather than the whole 9:16 frame.
+  const x0 = width * 0.16, y0 = height * 0.12, x1 = width * 0.84, y1 = height * 0.6;
+  const B = (x: number, y: number, k: string) => (
     <g key={k} style={{filter: shadow}}>
-      <rect x={x} y={y} width={sx > 0 ? len : t} height={sx > 0 ? t : len} fill={color} />
-      <rect x={x} y={y} width={sy > 0 ? t : len} height={sy > 0 ? len : t} fill={color} />
+      <rect x={x} y={y} width={t} height={len} fill={color} />
+      <rect x={x} y={y} width={len} height={t} fill={color} />
     </g>
   );
   return (
     <AbsoluteFill style={{pointerEvents: 'none', opacity: s}}>
       <svg width="100%" height="100%">
-        {B(inset, inset, 1, 1, 'tl')}
-        {B(width - inset - len, inset, 1, 1, 'tr')}
-        {B(inset, height - inset - len, 1, 1, 'bl')}
-        {B(width - inset - len, height - inset - len, 1, 1, 'br')}
+        {B(x0, y0, 'tl')}
+        <g transform={`translate(${x1} ${y0}) scale(-1 1)`}>{B(0, 0, 'tr')}</g>
+        <g transform={`translate(${x0} ${y1}) scale(1 -1)`}>{B(0, 0, 'bl')}</g>
+        <g transform={`translate(${x1} ${y1}) scale(-1 -1)`}>{B(0, 0, 'br')}</g>
       </svg>
     </AbsoluteFill>
   );
@@ -235,15 +238,21 @@ export const Mark: React.FC<{kind: 'check' | 'cross'; color?: string}> = ({kind,
   );
 };
 
-// ── Emoji pop ───────────────────────────────────────────────────────────────
-export const EmojiPop: React.FC<{emoji: string}> = ({emoji}) => {
+// ── Emoji pop — small, in a corner safe-zone (never over the face) ──────────
+// slot picks a corner so it never lands on the centre subject or an infographic.
+export const EmojiPop: React.FC<{emoji: string; slot?: 'tl' | 'tr' | 'bl' | 'br'}> = ({emoji, slot = 'tr'}) => {
   const s = usePop(11);
   const frame = useCurrentFrame();
-  const wob = 4 * Math.sin(frame / 5);
+  const wob = 5 * Math.sin(frame / 6);
+  const pos: React.CSSProperties =
+    slot === 'tl' ? {top: '14%', left: '9%'} :
+    slot === 'tr' ? {top: '14%', right: '9%'} :
+    slot === 'bl' ? {bottom: '28%', left: '9%'} :
+                    {bottom: '28%', right: '9%'};
   return (
-    <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center', pointerEvents: 'none'}}>
-      <div style={{marginTop: '18%', fontSize: 220, transform: `scale(${s}) rotate(${wob}deg)`,
-        filter: 'drop-shadow(0 10px 18px rgba(0,0,0,0.5))'}}>{emoji}</div>
+    <AbsoluteFill style={{pointerEvents: 'none'}}>
+      <div style={{position: 'absolute', ...pos, fontSize: 150,
+        transform: `scale(${s}) rotate(${wob}deg)`, filter: 'drop-shadow(0 8px 14px rgba(0,0,0,0.5))'}}>{emoji}</div>
     </AbsoluteFill>
   );
 };

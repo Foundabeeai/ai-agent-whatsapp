@@ -253,9 +253,26 @@ _DOODLES = ("none", "arrow", "arrows", "circle", "underline", "highlighter",
 _ZOOMS = ("in", "out", "punch", "none")
 _TRANSITIONS = ("none", "flash", "whip", "glitch", "shake")
 _INFO_TYPES = ("none", "counter", "progress", "ring", "stat")
-# Varied fallbacks so an unspecified plan still doesn't feel repetitive
-_DOODLE_FALLBACK = ("arrow", "none", "circle", "action_lines", "box", "none", "underline", "stars")
+# Varied fallbacks — mostly clean beats (less-is-more) so it never feels busy
+_DOODLE_FALLBACK = ("arrow", "none", "none", "action_lines", "none", "underline", "none", "stars")
 _TRANS_FALLBACK = ("flash", "whip", "flash", "glitch", "flash", "whip")
+
+
+def _fallback_words(segments: list[dict]) -> list[dict]:
+    """Build evenly-spaced word timings from segment captions when Whisper gave none."""
+    out: list[dict] = []
+    for seg in segments:
+        cap = (seg.get("caption") or "").strip()
+        toks = cap.split()
+        if not toks:
+            continue
+        s, e = float(seg.get("start", 0)), float(seg.get("end", 0))
+        if e <= s:
+            e = s + 1.0
+        step = (e - s) / len(toks)
+        for j, tok in enumerate(toks):
+            out.append({"start": s + j * step, "end": s + (j + 1) * step, "text": tok})
+    return out
 
 
 def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]) -> list[dict]:
@@ -304,6 +321,14 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
         big_llm = str(seg.get("big_text", "")).strip().upper()
         big_fallback = " ".join(cap.split()[:2]).upper() if cap else ""
         lens = bool(seg.get("lens", False))
+
+        # ── ONE hero element per beat (elite discipline): infographic > big_text
+        #    > doodle. Suppress the losers so overlays never stack. ──
+        has_info = info_out.get("type") != "none"
+        if has_info:
+            doodle, emoji, big_llm, lens = "none", "", "", False
+        elif big_llm:
+            doodle, emoji = "none", ""
 
         scene = {
             "start": seg["start"], "end": seg["end"],
@@ -364,6 +389,11 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
             s["start"] = max(0.0, min(float(s.get("start", 0)), duration))
             s["end"]   = max(s["start"] + 0.5, min(float(s.get("end", duration)), duration))
         segments.sort(key=lambda s: s["start"])
+
+        # Captions must ALWAYS appear. If Whisper word-timestamps came back empty,
+        # synthesize word timings from each segment's caption spread over its window.
+        if not words:
+            words = _fallback_words(segments)
 
         # 1) Generate stop-motion B-roll backgrounds (Replicate p-video) → S3
         _send(phone, {"kind": "text", "text": f"🎥 Creating {len(segments)} stop-motion background scenes… ⏱ a few minutes"})

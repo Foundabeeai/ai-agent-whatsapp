@@ -185,12 +185,10 @@ export const Presenter: React.FC<{src: string; mode: 'full' | 'sticker'; punch?:
   );
 };
 
-// ── Circular lens vignette (scope look) ─────────────────────────────────────
+// ── Spotlight vignette centred on the presenter's face (upper-centre) ───────
 export const LensVignette: React.FC = () => (
-  <AbsoluteFill style={{pointerEvents: 'none'}}>
-    <AbsoluteFill style={{boxShadow: 'inset 0 0 220px 140px rgba(0,0,0,0.9)', borderRadius: '50%'}} />
-    <AbsoluteFill style={{boxShadow: 'inset 0 0 120px 40px rgba(0,0,0,0.55)'}} />
-  </AbsoluteFill>
+  <AbsoluteFill style={{pointerEvents: 'none',
+    background: 'radial-gradient(ellipse 62% 42% at 50% 34%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.72) 100%)'}} />
 );
 
 // ── Word-by-word kinetic captions (elite TikTok / Hormozi style) ────────────

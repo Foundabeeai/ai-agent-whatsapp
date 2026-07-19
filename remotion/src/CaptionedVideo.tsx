@@ -134,14 +134,17 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
           const from = Math.max(0, Math.round(s.start * fps));
           const dur = Math.max(1, Math.round((s.end - s.start) * fps));
           const info = s.info && s.info.type !== 'none' ? s.info : null;
-          if (s.doodle === 'none' && !s.lens && !s.emoji && !info) return null;
+          // Don't stack an emoji on top of an infographic (they fight for the top).
+          const showEmoji = s.emoji && !info;
+          const slot = (['tr', 'tl', 'br', 'bl'] as const)[i % 4];
+          if (s.doodle === 'none' && !s.lens && !showEmoji && !info) return null;
           return (
             <Sequence key={`fx${i}`} from={from} durationInFrames={dur}>
               <AbsoluteFill>
+                {s.lens ? <LensVignette /> : null}
                 {s.doodle !== 'none' ? <Doodle kind={s.doodle} captionPos={captionPos} /> : null}
                 {info ? <Infographic type={info.type} value={info.value || 0} label={info.label} suffix={info.suffix} /> : null}
-                {s.emoji ? <EmojiPop emoji={s.emoji} /> : null}
-                {s.lens ? <LensVignette /> : null}
+                {showEmoji ? <EmojiPop emoji={s.emoji} slot={slot} /> : null}
               </AbsoluteFill>
             </Sequence>
           );
