@@ -1667,14 +1667,6 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         "delight), 'action_lines' (high-energy hype), 'check' (yes/correct/do this), 'cross' (no/myth/don't), "
         "or 'none' (let a calm beat breathe). VARY these across the video — never repeat the same one back "
         "to back, and leave some beats with 'none'.\n"
-        "  • emoji: a single relevant emoji to pop on a punchy beat (🔥💰✅❌👀🚀📈), else \"\".\n"
-        "  • info: an infographic (renders in the top band, clear of the face). Use a DATA type when a "
-        "number/percentage is spoken: {\"type\":\"counter\"|\"progress\"|\"ring\"|\"stat\", \"value\":<number>, "
-        "\"label\":\"SHORT LABEL\", \"suffix\":\"\"} (counter=count-up, ring/progress=%, stat=callout card). "
-        "For a QUALITATIVE point (a benefit/feature/step, no number), use {\"type\":\"callout\", "
-        "\"icon\":\"<one emoji>\", \"label\":\"2-3 WORDS\"}. Aim to include a fitting infographic on ROUGHLY "
-        "A THIRD of the segments (vary the type — don't repeat the same one); use {\"type\":\"none\"} on the "
-        "rest. NEVER invent numbers not in the transcript — if unsure, use a callout, not a fake stat.\n"
         "  • big_text: 1-2 word ALL-CAPS phrase to slam BEHIND the subject for a punchy keyword, else \"\" "
         "(only the 1-3 biggest beats).\n"
         "  • transition: how this cut ENTERS — 'flash' (default), 'whip' (fast energetic swipe), 'glitch' "
@@ -1685,8 +1677,8 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         "clean, stat beats get an infographic, the payoff beat gets a punch zoom + shake. Keep it authentic "
         "— never invent numbers or facts not in the transcript.\n"
         "\nDIRECTOR DISCIPLINE (this is what makes it look elite, not amateur):\n"
-        "- ONE hero element per beat MAX. Never combine a doodle AND an infographic AND big_text on the same "
-        "segment — pick the single strongest one; leave the rest empty.\n"
+        "- ONE hero element per beat MAX. Never combine a doodle AND big_text on the same segment — pick the "
+        "single strongest one; leave the rest empty.\n"
         "- LESS IS MORE: at least half the segments should have doodle='none' and no emoji — clean beats let "
         "the captions and presenter breathe. Overusing overlays is the #1 amateur mistake.\n"
         "- Emoji: use RARELY (at most 1-2 in the whole video), only when it truly amplifies a punchline. "
@@ -1704,8 +1696,8 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         f"Video duration: {duration_sec:.1f}s\n"
         f"Transcript:\n{transcript}\n\n"
         'Return JSON: {"title":"...","story":"...","segments":[{"start":0,"end":4,'
-        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"arrow","emoji":"","big_text":"",'
-        '"info":{"type":"none"},"transition":"flash","lens":false,"peak":false}],"cta":"..."}'
+        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"arrow","big_text":"",'
+        '"transition":"flash","lens":false,"peak":false}],"cta":"..."}'
     )
     raw = _chat(system, user, temperature=0.7, max_tokens=2200)
     try:

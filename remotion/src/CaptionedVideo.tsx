@@ -3,8 +3,7 @@ import {AbsoluteFill, Audio, OffthreadVideo, Sequence, staticFile, useCurrentFra
 import {z} from 'zod';
 import {SceneBackground} from './backgrounds';
 import {BigTextBehind, LensVignette, WordCaptions} from './graphics';
-import {Doodle, EmojiPop} from './doodles';
-import {Infographic} from './infographics';
+import {Doodle} from './doodles';
 import {FilmGrain, CutFlash, WhipSwipe, GlitchBurst, useShake} from './effects';
 
 const DOODLES = ['none', 'arrow', 'arrows', 'circle', 'underline', 'highlighter', 'box', 'brackets', 'stars', 'action_lines', 'check', 'cross'] as const;
@@ -129,23 +128,17 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
           );
         })}
 
-      {/* ── FRONT: doodles + infographic + emoji + lens per scene ── */}
+      {/* ── FRONT: doodles + lens per scene (no icons/infographics) ── */}
       {showFront &&
         scenes.map((s, i) => {
           const from = Math.max(0, Math.round(s.start * fps));
           const dur = Math.max(1, Math.round((s.end - s.start) * fps));
-          const info = s.info && s.info.type !== 'none' ? s.info : null;
-          // Don't stack an emoji on top of an infographic (they fight for the top).
-          const showEmoji = s.emoji && !info;
-          const slot = (['tr', 'tl', 'br', 'bl'] as const)[i % 4];
-          if (s.doodle === 'none' && !s.lens && !showEmoji && !info) return null;
+          if (s.doodle === 'none' && !s.lens) return null;
           return (
             <Sequence key={`fx${i}`} from={from} durationInFrames={dur}>
               <AbsoluteFill>
                 {s.lens ? <LensVignette /> : null}
                 {s.doodle !== 'none' ? <Doodle kind={s.doodle} captionPos={captionPos} /> : null}
-                {info ? <Infographic type={info.type} value={info.value || 0} label={info.label} suffix={info.suffix} icon={info.icon} /> : null}
-                {showEmoji ? <EmojiPop emoji={s.emoji} slot={slot} /> : null}
               </AbsoluteFill>
             </Sequence>
           );
@@ -170,7 +163,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
       {showFront &&
         scenes.map((s, i) => {
           const cutF = Math.round(s.start * fps);
-          const hasEl = s.doodle !== 'none' || (s.info && s.info.type !== 'none') || !!s.emoji || !!s.bigText;
+          const hasEl = s.doodle !== 'none' || !!s.bigText;
           const sfx: React.ReactNode[] = [];
           if (i > 0 && s.transition !== 'none') {
             const file = s.transition === 'shake' ? 'impact.mp3' : 'whoosh.mp3';

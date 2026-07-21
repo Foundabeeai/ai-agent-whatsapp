@@ -49,8 +49,10 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
         "text": (
             "🎬 *AI Video Editor*\n\n"
             "Send me your talking video and I'll turn it into a trending cut — "
-            "I'll remove your background, add B-roll behind you, punchy captions, and zoom effects.\n\n"
-            "📹 *Send your video now.*"
+            "removed background, dynamic B-roll behind you, punchy captions and zoom effects.\n\n"
+            "📹 *Send your video now.*\n"
+            "🏠 Optional: attach product photos or paste a *Zillow / listing link* in the same "
+            "message — I'll animate those photos as the background."
         ),
     }
 
@@ -84,12 +86,41 @@ def handle_step(
         if not video_url:
             return {"kind": "text", "text": "😕 Couldn't read that video — please send it again."}
         intent["_src_video_url"] = video_url
+
+        # Optional: product photos attached alongside the video → background source
+        product_imgs: list[str] = []
+        for url, mt in zip(media_urls, media_types):
+            if mt.startswith("image/"):
+                up = aws_storage.upload_from_url(url, user_id=user_id, media_kind="editor_photo")
+                if up.get("ok"):
+                    product_imgs.append(up["s3_url"])
+
+        # Optional: a Zillow / product link in the caption → scrape its images
+        scraped_imgs: list[str] = []
+        try:
+            from tools.url_context import find_all_urls, scrape_url as _scrape_url
+            urls = find_all_urls(clean or "")
+            if urls:
+                _send(phone, {"kind": "text", "text": "🔗 Pulling photos from your link…"})
+            for u in urls[:1]:
+                ctx = _scrape_url(u, phone)
+                if ctx.get("ok"):
+                    scraped_imgs.extend(ctx.get("image_urls", []) or [])
+        except Exception as exc:
+            logger.warning("video_editor: link scrape failed: %s", exc)
+
+        # Background source priority: scraped listing photos → attached product photos
+        intent["_bg_images"] = (scraped_imgs or product_imgs)[:8]
         intent["_sub_step"] = "planning"
         session.agent_intent = intent
         save_session(session)
+
+        note = ""
+        if intent["_bg_images"]:
+            note = f"\n• Using your {len(intent['_bg_images'])} photo(s) as animated backgrounds"
         _send(phone, {"kind": "text",
                       "text": "🎬 Got your video! Analyzing it:\n• Removing your background (green screen)\n"
-                              "• Transcribing what you say\n• Planning the trending cut\n⏱ ~2 minutes ☕"})
+                              "• Transcribing what you say\n• Planning the trending cut" + note + "\n⏱ ~2 minutes ☕"})
         threading.Thread(target=_plan_bg, args=(phone, session, intent), daemon=True).start()
         return {"kind": "none"}
 
@@ -275,6 +306,38 @@ def _fallback_words(segments: list[dict]) -> list[dict]:
     return out
 
 
+def _animate_images_to_broll(phone: str, segments: list[dict], images: list[str]) -> list[str]:
+    """
+    Animate the user's own photos (attached product shots or scraped Zillow
+    listing images) into cinematic B-roll clips via Replicate p-video, and assign
+    one to each segment (round-robin if there are fewer photos than segments).
+    Real photos get smooth cinematic motion (not stop-motion).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    _MOTION = ("smooth cinematic slow push-in with subtle parallax, gentle camera drift, "
+               "premium real-estate / product showcase, photorealistic, no text")
+    uniq = images[: min(len(images), max(1, len(segments)), 6)]
+
+    def _gen(img_url: str) -> str:
+        try:
+            vid = video_gen.generate_video_from_image(
+                img_url, _MOTION, duration=6, aspect_ratio="9:16", fps=24)
+            if vid.get("ok") and vid.get("bytes"):
+                up = aws_storage.upload_bytes(vid["bytes"], content_type="video/mp4",
+                                              extension="mp4", folder=f"{phone}/video_editor/broll")
+                return up.get("s3_url") or vid.get("url") or ""
+        except Exception as exc:
+            logger.warning("video_editor: image animation failed: %s", exc)
+        return ""
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        clips = list(ex.map(_gen, uniq))
+    valid = [c for c in clips if c]
+    if not valid:
+        return []
+    return [valid[i % len(valid)] for i in range(len(segments))]
+
+
 def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]) -> list[dict]:
     """
     Turn the edit-plan segments into scenes. The LLM chooses the per-scene overlays
@@ -304,24 +367,10 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
         if transition not in _TRANSITIONS:
             transition = _TRANS_FALLBACK[i % len(_TRANS_FALLBACK)]
 
-        emoji = str(seg.get("emoji", "") or "").strip()[:4]
-
-        # infographic — validate; 'callout' needs an icon/label, data types a value
-        info = seg.get("info") or {}
-        info_type = str(info.get("type", "none")).lower().strip()
-        if info_type not in _INFO_TYPES or info_type == "none":
-            info_out = {"type": "none"}
-        elif info_type == "callout":
-            icon = str(info.get("icon", "") or "").strip()[:4]
-            lbl = str(info.get("label", "")).strip()[:22]
-            info_out = {"type": "callout", "icon": icon, "label": lbl, "value": 0, "suffix": ""} if (icon or lbl) else {"type": "none"}
-        else:
-            try:
-                info_out = {"type": info_type, "value": float(info.get("value") or 0),
-                            "label": str(info.get("label", ""))[:22], "suffix": str(info.get("suffix", ""))[:4],
-                            "icon": ""}
-            except Exception:
-                info_out = {"type": "none"}
+        # Icons/emoji and infographics are intentionally disabled — they made the
+        # video feel cluttered. Captions + doodles + big-text only.
+        emoji = ""
+        info_out = {"type": "none"}
 
         big_llm = str(seg.get("big_text", "")).strip().upper()
         big_fallback = " ".join(cap.split()[:2]).upper() if cap else ""
@@ -400,9 +449,17 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
         if not words:
             words = _fallback_words(segments)
 
-        # 1) Generate stop-motion B-roll backgrounds (Replicate p-video) → S3
-        _send(phone, {"kind": "text", "text": f"🎥 Creating {len(segments)} stop-motion background scenes… ⏱ a few minutes"})
-        broll_urls = _generate_stopmotion_broll(phone, segments)
+        # 1) Backgrounds: animate the user's photos / Zillow images if provided,
+        #    otherwise generate stop-motion B-roll from the transcript.
+        bg_images = intent.get("_bg_images") or []
+        if bg_images:
+            _send(phone, {"kind": "text", "text": f"🏠 Animating your {len(bg_images)} photo(s) into cinematic backgrounds… ⏱ a few minutes"})
+            broll_urls = _animate_images_to_broll(phone, segments, bg_images)
+            if not any(broll_urls):   # animation failed → fall back to generated B-roll
+                broll_urls = _generate_stopmotion_broll(phone, segments)
+        else:
+            _send(phone, {"kind": "text", "text": f"🎥 Creating {len(segments)} B-roll background scenes… ⏱ a few minutes"})
+            broll_urls = _generate_stopmotion_broll(phone, segments)
         scenes = _plan_to_scenes(segments, duration, broll_urls)
 
         # 2) Remotion back plate: background videos + big-text (opaque h264)
