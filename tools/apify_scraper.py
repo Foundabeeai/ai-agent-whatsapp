@@ -215,8 +215,11 @@ def scrape_zillow(url: str) -> dict | None:
     image_urls = _extract_photos(item)
     summary    = _build_summary(item)
     if not image_urls:
-        logger.warning("apify: Zillow item had NO photos. keys=%s",
-                       list(item.keys())[:40] if isinstance(item, dict) else type(item).__name__)
+        import json as _json
+        rp = item.get("responsivePhotos") if isinstance(item, dict) else None
+        sample = _json.dumps(rp[0])[:600] if isinstance(rp, list) and rp else f"responsivePhotos={type(rp).__name__} len={len(rp) if isinstance(rp, list) else 'n/a'}"
+        logger.warning("apify: Zillow item had NO photos. status=%s sample=%s",
+                       item.get("homeStatus"), sample)
     logger.info("apify: Zillow scrape ok — %d photos, summary len=%d",
                 len(image_urls), len(summary))
     return {"summary": summary, "image_urls": image_urls, "raw": item}
