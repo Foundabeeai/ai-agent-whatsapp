@@ -18,6 +18,30 @@ import config
 _PRESIGNED_EXPIRY = 7 * 24 * 3600  # 604800 seconds
 
 
+def reap_local_temp(max_age_h: float = 1.0) -> int:
+    """
+    Delete stale local temp working files/dirs (Remotion + ffmpeg scratch under
+    /tmp/tmp*) once media has already been uploaded to S3 and delivered. Only
+    touches items older than `max_age_h` so it never disturbs an in-flight render.
+    Returns the number of items removed. Safe to call anytime; never raises.
+    """
+    import glob, time, shutil
+    removed = 0
+    cutoff = time.time() - max_age_h * 3600
+    for p in glob.glob("/tmp/tmp*"):
+        try:
+            if os.path.getmtime(p) >= cutoff:
+                continue
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                os.remove(p)
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
 def _s3_client():
     return boto3.client(
         "s3",

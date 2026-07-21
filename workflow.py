@@ -440,6 +440,17 @@ def _send_async(to: str, payload: dict, tts: bool = False) -> None:
         except Exception as exc:
             send_text(to, f"⚠️ Unexpected error: {exc}")
 
+        # Media is already on S3 and now delivered → free local scratch space.
+        # (only clears temp older than an hour, so live renders are untouched)
+        if payload.get("kind") == "media" and payload.get("media_url"):
+            def _reap():
+                try:
+                    from tools.aws_storage import reap_local_temp
+                    reap_local_temp()
+                except Exception:
+                    pass
+            threading.Thread(target=_reap, daemon=True).start()
+
         # Fire TTS only when explicitly requested AND user is in voice mode
         if tts and _is_voice_mode(to) and payload.get("kind") == "text":
             text = payload.get("text", "")

@@ -212,18 +212,10 @@ def handle_step(
     return start(phone, session, intent)
 
 
-def _reap_tmp(max_age_h: float = 2.0) -> None:
-    """Delete stale /tmp working dirs from crashed/old renders so the disk can't
-    fill up over time (Remotion + ffmpeg leave temp dirs on failure)."""
+def _reap_tmp() -> None:
+    """Clear stale local temp before a heavy render (shared reaper)."""
     try:
-        import glob, time, os as _os, shutil
-        cutoff = time.time() - max_age_h * 3600
-        for p in glob.glob("/tmp/tmp*"):
-            try:
-                if _os.path.getmtime(p) < cutoff:
-                    shutil.rmtree(p, ignore_errors=True) if _os.path.isdir(p) else _os.remove(p)
-            except Exception:
-                pass
+        aws_storage.reap_local_temp(max_age_h=1.0)
     except Exception:
         pass
 
