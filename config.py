@@ -1,9 +1,25 @@
 """Central config — reads all env vars with safe defaults."""
 
 import os
+import tempfile
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+# ── Scratch directory ────────────────────────────────────────────────────────
+# Video rendering (Remotion frames + ffmpeg intermediates) writes a LOT to temp.
+# On this host /tmp is a small tmpfs, so heavy renders hit "disk quota exceeded"
+# (errno -122). Redirect all scratch to a disk-backed dir so it uses the real
+# 19 GB root disk instead. Applies to Python tempfile AND child processes
+# (Node/Remotion + ffmpeg read TMPDIR), since they inherit os.environ.
+SCRATCH_DIR = _env_scratch = (os.getenv("BEEQ_SCRATCH") or "/var/tmp/beeq").strip()
+try:
+    os.makedirs(SCRATCH_DIR, exist_ok=True)
+    os.environ["TMPDIR"] = SCRATCH_DIR
+    tempfile.tempdir = SCRATCH_DIR
+except Exception:
+    SCRATCH_DIR = tempfile.gettempdir()
 
 
 def _get(key: str, default: str = "") -> str:

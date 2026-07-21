@@ -25,10 +25,11 @@ def reap_local_temp(max_age_h: float = 1.0) -> int:
     touches items older than `max_age_h` so it never disturbs an in-flight render.
     Returns the number of items removed. Safe to call anytime; never raises.
     """
-    import glob, time, shutil
+    import glob, time, shutil, tempfile
     removed = 0
     cutoff = time.time() - max_age_h * 3600
-    for p in glob.glob("/tmp/tmp*"):
+    scratch = tempfile.gettempdir()   # honours config's redirected TMPDIR
+    for p in glob.glob(os.path.join(scratch, "tmp*")):
         try:
             if os.path.getmtime(p) >= cutoff:
                 continue
