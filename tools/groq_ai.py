@@ -1661,8 +1661,8 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         "  • broll_prompt: cinematic stop-motion B-roll relevant to what's said (no text/logos)\n"
         "  • caption: SHORT (max 6 words), matching what they say in that beat\n"
         "  • zoom: 'in' (build tension), 'out' (reveal/breathe), 'punch' (hard emphasis), or 'none'\n"
-        "  • doodle: a hand-drawn overlay chosen for MEANING. Options: 'arrow' (point at them / one big "
-        "claim), 'arrows' (surround for hype), 'circle' (spotlight one thing), 'underline' or 'highlighter' "
+        "  • doodle: a hand-drawn overlay chosen for MEANING. Options: 'circle' (spotlight one thing), "
+        "'underline' or 'highlighter' "
         "(drive home a key caption word), 'box' or 'brackets' (frame/focus on them), 'stars' (a win / "
         "delight), 'action_lines' (high-energy hype), 'check' (yes/correct/do this), 'cross' (no/myth/don't), "
         "or 'none' (let a calm beat breathe). VARY these across the video — never repeat the same one back "
@@ -1696,7 +1696,7 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         f"Video duration: {duration_sec:.1f}s\n"
         f"Transcript:\n{transcript}\n\n"
         'Return JSON: {"title":"...","story":"...","segments":[{"start":0,"end":4,'
-        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"arrow","big_text":"",'
+        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"circle","big_text":"",'
         '"transition":"flash","lens":false,"peak":false}],"cta":"..."}'
     )
     raw = _chat(system, user, temperature=0.7, max_tokens=2200)

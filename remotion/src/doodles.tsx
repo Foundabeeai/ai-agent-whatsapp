@@ -261,8 +261,9 @@ export const EmojiPop: React.FC<{emoji: string; slot?: 'tl' | 'tr' | 'bl' | 'br'
 
 export const Doodle: React.FC<{kind: string; captionPos?: 'top' | 'bottom'}> = ({kind, captionPos = 'bottom'}) => {
   switch (kind) {
-    case 'arrow': return <BigArrow />;
-    case 'arrows': return <ArrowsRing />;
+    // arrows removed — they never read as clean arrows on busy video
+    case 'arrow': return null;
+    case 'arrows': return null;
     case 'circle': return <CircleHighlight />;
     case 'underline': return <Underline position={captionPos} />;
     case 'highlighter': return <Highlighter position={captionPos} />;

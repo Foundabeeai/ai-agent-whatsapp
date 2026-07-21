@@ -38,6 +38,44 @@ def _send(phone: str, payload: dict, tts: bool = False) -> None:
     _send_async(phone, payload, tts=tts)
 
 
+def _gather_assets(phone: str, user_id: str, intent: dict, clean: str,
+                   media_urls: list[str], media_types: list[str]) -> int:
+    """
+    Collect background-source images from THIS message: attached product photos
+    and/or images scraped from a Zillow/listing link in the caption. Accumulates
+    into intent["_bg_images"] (deduped, capped). Returns the total count so far.
+    """
+    imgs = list(intent.get("_bg_images") or [])
+
+    for url, mt in zip(media_urls or [], media_types or []):
+        if mt.startswith("image/"):
+            up = aws_storage.upload_from_url(url, user_id=user_id, media_kind="editor_photo")
+            if up.get("ok"):
+                imgs.append(up["s3_url"])
+
+    try:
+        from tools.url_context import find_all_urls, scrape_url as _scrape_url
+        urls = find_all_urls(clean or "")
+        for u in urls[:1]:
+            _send(phone, {"kind": "text", "text": "🔗 Pulling photos from your link…"})
+            ctx = _scrape_url(u, phone)
+            if ctx.get("ok") and ctx.get("image_urls"):
+                imgs.extend(ctx["image_urls"])
+                logger.info("video_editor: scraped %d images from %s", len(ctx["image_urls"]), u)
+            elif ctx.get("error") == "blocked":
+                _send(phone, {"kind": "text",
+                              "text": "⚠️ That site blocked me from reading its photos — I'll use AI backgrounds instead."})
+            else:
+                _send(phone, {"kind": "text",
+                              "text": "⚠️ Couldn't pull photos from that link — I'll use AI backgrounds instead."})
+    except Exception as exc:
+        logger.warning("video_editor: link scrape failed: %s", exc)
+
+    imgs = list(dict.fromkeys(imgs))[:8]   # dedupe, keep order, cap
+    intent["_bg_images"] = imgs
+    return len(imgs)
+
+
 def start(phone: str, session: UserSession, intent: dict) -> dict:
     intent["reel_type"] = "video_editor"
     intent["_sub_step"] = "awaiting_video"
@@ -87,42 +125,39 @@ def handle_step(
             return {"kind": "text", "text": "😕 Couldn't read that video — please send it again."}
         intent["_src_video_url"] = video_url
 
-        # Optional: product photos attached alongside the video → background source
-        product_imgs: list[str] = []
-        for url, mt in zip(media_urls, media_types):
-            if mt.startswith("image/"):
-                up = aws_storage.upload_from_url(url, user_id=user_id, media_kind="editor_photo")
-                if up.get("ok"):
-                    product_imgs.append(up["s3_url"])
+        # Grab any photos / link that came WITH the video
+        n = _gather_assets(phone, user_id, intent, clean, media_urls, media_types)
+        if n > 0:
+            return _start_planning(phone, session, intent)
 
-        # Optional: a Zillow / product link in the caption → scrape its images
-        scraped_imgs: list[str] = []
-        try:
-            from tools.url_context import find_all_urls, scrape_url as _scrape_url
-            urls = find_all_urls(clean or "")
-            if urls:
-                _send(phone, {"kind": "text", "text": "🔗 Pulling photos from your link…"})
-            for u in urls[:1]:
-                ctx = _scrape_url(u, phone)
-                if ctx.get("ok"):
-                    scraped_imgs.extend(ctx.get("image_urls", []) or [])
-        except Exception as exc:
-            logger.warning("video_editor: link scrape failed: %s", exc)
-
-        # Background source priority: scraped listing photos → attached product photos
-        intent["_bg_images"] = (scraped_imgs or product_imgs)[:8]
-        intent["_sub_step"] = "planning"
+        # Nothing yet — offer to add photos/link (or skip to AI backgrounds)
+        intent["_sub_step"] = "awaiting_assets"
         session.agent_intent = intent
         save_session(session)
+        return {"kind": "text",
+                "text": ("✅ Got your video!\n\nWant your own visuals in the background?\n"
+                         "🏠 Paste a *Zillow / listing link*, or 📷 send *product photos* now — "
+                         "I'll animate them behind you.\n\nOr reply *skip* to use AI-generated backgrounds.")}
 
-        note = ""
-        if intent["_bg_images"]:
-            note = f"\n• Using your {len(intent['_bg_images'])} photo(s) as animated backgrounds"
-        _send(phone, {"kind": "text",
-                      "text": "🎬 Got your video! Analyzing it:\n• Removing your background (green screen)\n"
-                              "• Transcribing what you say\n• Planning the trending cut" + note + "\n⏱ ~2 minutes ☕"})
-        threading.Thread(target=_plan_bg, args=(phone, session, intent), daemon=True).start()
-        return {"kind": "none"}
+    if sub_step == "awaiting_assets":
+        user_id = session.verified_user_id or phone
+        if low in ("skip", "no", "none", "go", "proceed", "continue", "ai", "generate"):
+            return _start_planning(phone, session, intent)
+        has_image = any(t.startswith("image/") for t in media_types)
+        has_link = False
+        try:
+            from tools.url_context import find_all_urls
+            has_link = bool(find_all_urls(clean or ""))
+        except Exception:
+            pass
+        if has_image or has_link:
+            n = _gather_assets(phone, user_id, intent, clean, media_urls, media_types)
+            if n > 0:
+                return _start_planning(phone, session, intent)
+            # scraping/photos yielded nothing → proceed with AI backgrounds
+            return _start_planning(phone, session, intent)
+        return {"kind": "text",
+                "text": "Send a *Zillow/listing link* or *product photos* for the background, or reply *skip*."}
 
     if sub_step == "planning":
         return {"kind": "text", "text": "⏳ Still analyzing your video — hang tight!"}
@@ -175,6 +210,20 @@ def handle_step(
         return {"kind": "text", "text": "⏳ Publishing in progress — one moment!"}
 
     return start(phone, session, intent)
+
+
+def _start_planning(phone: str, session: UserSession, intent: dict) -> dict:
+    """Kick off the matte→transcript→plan background worker."""
+    intent["_sub_step"] = "planning"
+    session.agent_intent = intent
+    save_session(session)
+    n = len(intent.get("_bg_images") or [])
+    note = f"\n• Animating your {n} photo(s) as backgrounds" if n else ""
+    _send(phone, {"kind": "text",
+                  "text": "🎬 Building your reel:\n• Removing your background (green screen)\n"
+                          "• Transcribing what you say\n• Planning the trending cut" + note + "\n⏱ ~2 minutes ☕"})
+    threading.Thread(target=_plan_bg, args=(phone, session, intent), daemon=True).start()
+    return {"kind": "none"}
 
 
 def _plan_bg(phone: str, session: UserSession, intent: dict) -> None:
@@ -285,7 +334,7 @@ _ZOOMS = ("in", "out", "punch", "none")
 _TRANSITIONS = ("none", "flash", "whip", "glitch", "shake")
 _INFO_TYPES = ("none", "counter", "progress", "ring", "stat", "callout")
 # Varied fallbacks — mostly clean beats (less-is-more) so it never feels busy
-_DOODLE_FALLBACK = ("none", "arrow", "none", "action_lines", "none", "underline", "none", "stars")
+_DOODLE_FALLBACK = ("none", "circle", "none", "action_lines", "none", "underline", "none", "stars")
 _TRANS_FALLBACK = ("flash", "whip", "flash", "glitch", "flash", "whip")
 
 
@@ -356,6 +405,9 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
         doodle = str(seg.get("doodle", "")).lower().strip()
         if doodle not in _DOODLES:
             doodle = _DOODLE_FALLBACK[i % len(_DOODLE_FALLBACK)]
+        # Arrows never look good here — remove them from every video.
+        if doodle in ("arrow", "arrows"):
+            doodle = "none"
 
         zoom = str(seg.get("zoom", "")).lower().strip()
         if zoom not in _ZOOMS:
