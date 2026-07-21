@@ -212,6 +212,22 @@ def handle_step(
     return start(phone, session, intent)
 
 
+def _reap_tmp(max_age_h: float = 2.0) -> None:
+    """Delete stale /tmp working dirs from crashed/old renders so the disk can't
+    fill up over time (Remotion + ffmpeg leave temp dirs on failure)."""
+    try:
+        import glob, time, os as _os, shutil
+        cutoff = time.time() - max_age_h * 3600
+        for p in glob.glob("/tmp/tmp*"):
+            try:
+                if _os.path.getmtime(p) < cutoff:
+                    shutil.rmtree(p, ignore_errors=True) if _os.path.isdir(p) else _os.remove(p)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _start_planning(phone: str, session: UserSession, intent: dict) -> dict:
     """Kick off the matte→transcript→plan background worker."""
     intent["_sub_step"] = "planning"
@@ -480,6 +496,7 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
     """
     try:
         from tools import remotion_render
+        _reap_tmp()   # self-heal: clear stale temp dirs before a heavy render
         plan     = intent.get("_edit_plan", {}) or {}
         segments = plan.get("segments", []) or []
         words    = intent.get("_words", []) or []

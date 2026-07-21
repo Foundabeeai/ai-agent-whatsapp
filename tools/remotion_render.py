@@ -101,45 +101,50 @@ def render_layer(
     tmp = tempfile.mkdtemp()
     props_path = os.path.join(tmp, "props.json")
     out_path = os.path.join(tmp, f"layer.{ext}")
-    with open(props_path, "w") as f:
-        json.dump(props, f)
-
-    cmd = [
-        "npx", "remotion", "render", _ENTRY, _COMPOSITION, out_path,
-        f"--props={props_path}",
-        "--timeout", "120000",
-        "--log", "error",
-    ]
-    if transparent:
-        # ProRes 4444 carries alpha on OUTPUT (reliable, unlike transparent input).
-        # Transparent output requires PNG image frames.
-        cmd += ["--codec", "prores", "--prores-profile", "4444",
-                "--pixel-format", "yuva444p10le", "--image-format", "png"]
-    else:
-        cmd += ["--codec", "h264"]
-    env = dict(os.environ)
-    env.setdefault("REMOTION_DISABLE_TELEMETRY", "1")
-
     try:
-        proc = subprocess.run(
-            cmd, cwd=_REMOTION_DIR, env=env,
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"remotion render timed out after {timeout}s"}
-    except Exception as exc:
-        return {"ok": False, "error": f"remotion invoke failed: {exc}"}
+        with open(props_path, "w") as f:
+            json.dump(props, f)
 
-    if proc.returncode != 0 or not os.path.exists(out_path):
-        tail = (proc.stderr or proc.stdout or "")[-800:]
-        logger.error("remotion render failed (%s): %s", proc.returncode, tail)
-        return {"ok": False, "error": f"remotion render failed: {tail}"}
+        cmd = [
+            "npx", "remotion", "render", _ENTRY, _COMPOSITION, out_path,
+            f"--props={props_path}",
+            "--timeout", "120000",
+            "--log", "error",
+        ]
+        if transparent:
+            # ProRes 4444 carries alpha on OUTPUT (reliable, unlike transparent input).
+            # Transparent output requires PNG image frames.
+            cmd += ["--codec", "prores", "--prores-profile", "4444",
+                    "--pixel-format", "yuva444p10le", "--image-format", "png"]
+        else:
+            cmd += ["--codec", "h264"]
+        env = dict(os.environ)
+        env.setdefault("REMOTION_DISABLE_TELEMETRY", "1")
 
-    try:
-        with open(out_path, "rb") as f:
-            data = f.read()
-    except Exception as exc:
-        return {"ok": False, "error": f"could not read remotion output: {exc}"}
+        try:
+            proc = subprocess.run(
+                cmd, cwd=_REMOTION_DIR, env=env,
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"remotion render timed out after {timeout}s"}
+        except Exception as exc:
+            return {"ok": False, "error": f"remotion invoke failed: {exc}"}
 
-    logger.info("remotion render (%s): %d bytes", layer, len(data))
-    return {"ok": True, "bytes": data, "ext": ext}
+        if proc.returncode != 0 or not os.path.exists(out_path):
+            tail = (proc.stderr or proc.stdout or "")[-800:]
+            logger.error("remotion render failed (%s): %s", proc.returncode, tail)
+            return {"ok": False, "error": f"remotion render failed: {tail}"}
+
+        try:
+            with open(out_path, "rb") as f:
+                data = f.read()
+        except Exception as exc:
+            return {"ok": False, "error": f"could not read remotion output: {exc}"}
+
+        logger.info("remotion render (%s): %d bytes", layer, len(data))
+        return {"ok": True, "bytes": data, "ext": ext}
+    finally:
+        # Always remove the temp dir (props + output video) so /tmp never fills up.
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
