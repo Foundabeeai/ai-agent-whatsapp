@@ -41,7 +41,7 @@ def _apply_compositor(c: dict) -> dict:
     defaults = {
         "canvas_w": 1080, "canvas_h": 1080, "pad_x": 72,
         "overlay_top_alpha": 20, "overlay_bot_alpha": 200,
-        "badge_present": True, "badge_position": "top-left",
+        "badge_present": False, "badge_position": "top-left",
         "badge_avatar_px": 72, "badge_offset_x": 72, "badge_offset_y": 56,
         "badge_shape": "pill", "badge_bg_rgba": [255, 255, 255, 235],
         "badge_border_color": None, "badge_border_px": 0,
@@ -299,8 +299,9 @@ def _profile_badge(canvas: Image.Image, username: str, brand_name: str,
                    avatar: Optional[Image.Image] = None,
                    comp: Optional[dict] = None) -> None:
     """Draw profile badge using compositor style parameters."""
-    if comp and not comp.get("badge_present", True):
-        return  # user's style has no badge
+    # Badges are off by default everywhere — only draw when explicitly enabled.
+    if not (comp and comp.get("badge_present", False)):
+        return
 
     c = comp or {}
     AV  = int(c.get("badge_avatar_px", 72))

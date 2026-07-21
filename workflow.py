@@ -811,16 +811,7 @@ def _generate_and_notify_bg(phone: str) -> None:
                     raise RuntimeError(f"S3 upload failed: {up.get('error')}")
                 s3_urls.append(up["s3_url"])
 
-            # Stamp profile badge on every image
-            session.bg_status = "🏷️ Adding brand badge..."
-            save_session(session)
-            s3_urls = _stamp_s3_images(
-                s3_urls,
-                username=session.instagram_username or "yourbrand",
-                brand_name=session.brand_name or "",
-                avatar_url=session.brand_assets[0] if session.brand_assets else None,
-                user_id=user_id,
-            )
+            # Profile badge intentionally NOT stamped (badges are off by default).
             session.image_prompts = [poster_prompt] * count
 
         # ── PATH B: No product image ──────────────────────────────────────────
@@ -961,17 +952,7 @@ def _generate_and_notify_bg(phone: str) -> None:
             if not s3_result.get("ok"):
                 raise RuntimeError(f"S3 upload failed: {s3_result.get('error')}")
             s3_urls = s3_result["s3_urls"]
-
-            # Stamp profile badge on every image
-            session.bg_status = "🏷️ Adding brand badge..."
-            save_session(session)
-            s3_urls = _stamp_s3_images(
-                s3_urls,
-                username=session.instagram_username or "yourbrand",
-                brand_name=session.brand_name or "",
-                avatar_url=session.brand_assets[0] if session.brand_assets else None,
-                user_id=user_id,
-            )
+            # Profile badge intentionally NOT stamped (badges are off by default).
 
         session.generated_image_urls = s3_urls
         session.bg_status = "📨 Sending your images..."
@@ -1145,18 +1126,11 @@ def _generate_initial_content_bg(phone: str) -> None:
     brand_name_str = session.brand_name or ""
 
     def _gen_and_stamp(replicate_urls: list[str], media_kind: str) -> list[str]:
-        """Upload Replicate URLs to S3 then stamp profile badge. Returns final presigned URLs."""
+        """Upload Replicate URLs to S3. Returns presigned URLs (no badge — off by default)."""
         s3 = aws_storage.upload_urls(replicate_urls, user_id, media_kind=media_kind)
         if not s3.get("ok"):
             return []
-        stamped = _stamp_s3_images(
-            s3["s3_urls"],
-            username=username,
-            brand_name=brand_name_str,
-            avatar_url=avatar_url,
-            user_id=user_id,
-        )
-        return stamped
+        return s3["s3_urls"]
 
     queue: list[dict] = []
 
