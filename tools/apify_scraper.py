@@ -47,10 +47,15 @@ def _run_actor(actor: str, payload: dict) -> list[dict]:
         f"?token={token}"
     )
     resp = requests.post(endpoint, json=payload, timeout=_RUN_TIMEOUT)
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        # Surface WHY (402 = actor needs paid rental/credits; 404 = wrong actor id)
+        body = (resp.text or "")[:300]
+        logger.warning("apify: actor %s HTTP %s — %s", actor, resp.status_code, body)
+        resp.raise_for_status()
     data = resp.json()
     if isinstance(data, dict):  # some actors wrap items
         data = data.get("items", [])
+    logger.info("apify: actor %s returned %d items", actor, len(data or []))
     return data or []
 
 
@@ -209,6 +214,9 @@ def scrape_zillow(url: str) -> dict | None:
     item = items[0]
     image_urls = _extract_photos(item)
     summary    = _build_summary(item)
+    if not image_urls:
+        logger.warning("apify: Zillow item had NO photos. keys=%s",
+                       list(item.keys())[:40] if isinstance(item, dict) else type(item).__name__)
     logger.info("apify: Zillow scrape ok — %d photos, summary len=%d",
                 len(image_urls), len(summary))
     return {"summary": summary, "image_urls": image_urls, "raw": item}
