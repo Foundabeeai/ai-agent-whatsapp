@@ -297,14 +297,9 @@ def create_cinematic_reel_bg(
         if not merge_result.get("ok"):
             raise RuntimeError(f"Merge failed: {merge_result.get('error')}")
 
-        # ── Step 6: Stamp profile badge on the merged video ──────────────
-        username    = session.instagram_username or "yourbrand"
-        _brand_name = session.brand_name or ""
-        avatar_url  = session.brand_assets[0] if session.brand_assets else None
-        badge_png   = render_badge_png(username, _brand_name, avatar_url)
-        badged_bytes = video_gen.stamp_video(merge_result["bytes"], badge_png)
-
-        final_video_bytes = badged_bytes
+        # ── Step 6: profile badge intentionally NOT stamped on reels ─────
+        # (badges are off by default; reels should be clean, unbranded video)
+        final_video_bytes = merge_result["bytes"]
 
         # ── Step 7: Upload final video (public-read so Twilio can fetch it) ─
         send_fn(phone, {"kind": "text", "text": "☁️ Uploading your reel..."})
@@ -668,12 +663,7 @@ def create_ad_reel_bg(
         )
         lipsync_bytes = captioned_bytes if captioned_bytes else lip_result["bytes"]
 
-        # Stamp badge on lipsync
-        try:
-            badge_png = render_badge_png(brand_name)
-            lipsync_bytes = video_gen.stamp_video(lipsync_bytes, badge_png)
-        except Exception as badge_err:
-            logger.warning("Ad reel badge stamp failed: %s", badge_err)
+        # Profile badge intentionally NOT stamped — reels stay clean/unbranded.
 
         # ── Step 6: Composite everything ─────────────────────────────────
         send_fn(phone, {"kind": "text", "text": "🎬 Compositing final Ad Reel (step 6/6)..."})
