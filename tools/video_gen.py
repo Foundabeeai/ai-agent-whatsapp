@@ -956,10 +956,13 @@ def key_presenter_over(back_bytes: bytes, greenscreen_url: str, audio_url: str =
                 with open(audio, "wb") as f:
                     f.write(_req.get(audio_url, timeout=180).content)
 
+            # Presenter as a smaller cut-out anchored to the BOTTOM-LEFT so the
+            # background B-roll stays visible. Key green → fit within a half-frame
+            # box (≈540x1180) → overlay flush to the lower-left with a small margin.
             fc = (
-                "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,chromakey=0x00B140:0.16:0.06[ck];"
-                "[0:v][ck]overlay=shortest=1[v]"
+                "[1:v]chromakey=0x00B140:0.16:0.06,"
+                "scale=540:1180:force_original_aspect_ratio=decrease[ck];"
+                "[0:v][ck]overlay=x=24:y=H-h-20:shortest=1[v]"
             )
             cmd = ["ffmpeg", "-y", "-i", back, "-i", gs]
             if audio:
