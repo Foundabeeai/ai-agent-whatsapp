@@ -336,49 +336,71 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         )
         brand_hex = groq_ai.get_brand_hex_colors(session.brand_colors or "")
 
-        # Step 2: Generate background images (use scraped images as references if available)
+        # Step 2: A background image for EVERY slide — scraped real photos first
+        # (as many as available), then generated branded backgrounds to fill the
+        # rest so no slide is left with a plain background.
         total_slides = 1 + slide_count
-        n_bg = max(1, total_slides // 2)
-        _send(phone, {"kind": "text", "text": f"🎨 Generating {n_bg} background image(s)..."})
-
         import requests as _req
-        hook_bytes: Optional[bytes] = None
-        extra_bg: list[bytes] = []
+        from concurrent.futures import ThreadPoolExecutor
 
+        def _fetch(u: str) -> Optional[bytes]:
+            try:
+                r = _req.get(u, timeout=30)
+                return r.content if r.ok else None
+            except Exception:
+                return None
+
+        # one bg slot per slide (index 0 = cover)
+        bgs: list[Optional[bytes]] = [None] * total_slides
+
+        # 1) Fill slots with the user's REAL scraped photos (never regenerated)
+        real_used = 0
         if scraped_imgs:
-            # PRESERVE: use the user's REAL photos directly as slide backgrounds —
-            # never regenerate the property/product, just feature the actual photos.
             _send(phone, {"kind": "text", "text": "🏡 Using your real photos for the slides..."})
-            real_bytes: list[bytes] = []
-            for u in scraped_imgs[: total_slides]:
-                try:
-                    r = _req.get(u, timeout=30)
-                    if r.ok:
-                        real_bytes.append(r.content)
-                except Exception:
-                    continue
-            if real_bytes:
-                hook_bytes = real_bytes[0]
-                extra_bg   = real_bytes[1:]
-        else:
-            # No real photos → generate branded background images
-            _send(phone, {"kind": "text", "text": f"🎨 Generating {n_bg} background image(s)..."})
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                fetched = list(ex.map(_fetch, scraped_imgs[:total_slides]))
+            for b in fetched:
+                if b and real_used < total_slides:
+                    bgs[real_used] = b
+                    real_used += 1
+
+        # 2) Generate a relevant branded background for each remaining slot
+        missing = [i for i in range(total_slides) if bgs[i] is None]
+        if missing:
+            _send(phone, {"kind": "text", "text": f"🎨 Generating {len(missing)} background image(s)..."})
             ref_images = [session.brand_assets[0]] if session.brand_assets else None
-            for bi in range(n_bg):
+            slide_texts = [carousel_content.get("hook", "")] + [
+                (s.get("title") or s.get("headline") or s.get("text") or "")
+                for s in (carousel_content.get("slides") or [])
+            ]
+
+            def _gen_bg(i: int) -> tuple[int, Optional[bytes]]:
+                txt = slide_texts[i] if i < len(slide_texts) else description
                 bg_prompt = (
-                    f"Cinematic editorial photo for {brand.get('brand_name','the brand')}: {description}. "
-                    f"Brand colors: {session.brand_colors or 'professional dark tones'}. "
+                    f"Cinematic editorial photo for {brand.get('brand_name','the brand')}: "
+                    f"{(txt or description)[:180]}. Brand colors: "
+                    f"{session.brand_colors or 'professional dark tones'}. "
                     "No text, no logos, dramatic commercial lighting, magazine quality."
                 )
-                ref = [ref_images[bi % len(ref_images)]] if ref_images else None
+                ref = [ref_images[i % len(ref_images)]] if ref_images else None
                 gen = image_gen.generate_image(bg_prompt, aspect_ratio="1:1", reference_urls=ref)
-                if gen.get("ok"):
-                    r = _req.get(gen["url"], timeout=30)
-                    if r.ok:
-                        if bi == 0:
-                            hook_bytes = r.content
-                        else:
-                            extra_bg.append(r.content)
+                return (i, _fetch(gen["url"]) if gen.get("ok") and gen.get("url") else None)
+
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                for i, b in ex.map(_gen_bg, missing):
+                    if b:
+                        bgs[i] = b
+
+        # 3) Fallback: any slot still empty reuses the previous available image
+        last: Optional[bytes] = None
+        for i in range(total_slides):
+            if bgs[i] is None:
+                bgs[i] = last
+            else:
+                last = bgs[i]
+
+        hook_bytes: Optional[bytes] = bgs[0]
+        extra_bg: list[bytes] = [b for b in bgs[1:] if b is not None]
 
         if not hook_bytes:
             raise RuntimeError("Background image generation failed")

@@ -806,19 +806,12 @@ def make_research_carousel(
     slides  = carousel_content.get("slides") or []
     total   = 1 + len(slides)
 
-    # Determine which content slide indices get a photo background
-    # Formula: total_images = max(1, total // 2); first image = cover
-    # extra images go to content slides spaced evenly
-    n_extra_imgs = max(0, (total // 2) - 1)  # images beyond the cover
-    extra_bg_list = list(extra_bg_bytes or [])[:n_extra_imgs]
-
-    # Which content slide indices (0-based) get a photo bg?
-    img_slide_indices: set[int] = set()
-    if extra_bg_list:
-        step = max(1, len(slides) // len(extra_bg_list))
-        for k in range(len(extra_bg_list)):
-            idx = min(k * step, len(slides) - 1)
-            img_slide_indices.add(idx)
+    # Every content slide gets a photo background when one is available (the
+    # caller now supplies one image per slide). Content slide i uses
+    # extra_bg_list[i]; any slides beyond the supplied images fall back to the
+    # designed scheme background.
+    extra_bg_list = list(extra_bg_bytes or [])
+    img_slide_indices: set[int] = set(range(min(len(slides), len(extra_bg_list))))
 
     result: list[bytes] = []
 
