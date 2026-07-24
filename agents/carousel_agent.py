@@ -331,6 +331,15 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         else:
             _send(phone, {"kind": "text", "text": "📊 Researching data and crafting slides..."})
             enriched_description = description + scraped_ctx
+        # Reuse the user's saved contact card → add a real "Get in touch" final slide
+        _card = db.get_contact_card(phone)
+        if _card and (_card.get("email") or _card.get("mobile") or _card.get("website")):
+            parts = [f"{k}: {_card[k]}" for k in ("name", "role", "mobile", "email", "website", "company")
+                     if _card.get(k)]
+            enriched_description += (
+                "\n\nMake the FINAL slide a 'Get in touch' contact call-to-action using EXACTLY these "
+                "details verbatim (do not alter or invent): " + "; ".join(parts))
+
         carousel_content = groq_ai.generate_research_carousel_content(
             topic=enriched_description, brand=brand, slide_count=slide_count
         )
