@@ -5,12 +5,9 @@ Produces rich marketing flyers (real-estate / product) like a designed poster �
 price, feature checklist, appliance/extras box, the property photo, the agent's
 cut-out photo + contact block, and brand logos — using openai/gpt-image-2.
 
-Triggered from image_post_agent when the user asks for a "detailed"/"poster"/
-"flyer" style (or a listing link is provided). Details come from the user's
-message + any scraped listing context; the agent's headshot is requested.
-
-Sub-steps (intent["_sub_step"]):
-  awaiting_agent_photo — waiting for the user's (agent) headshot
+Flow (intent["_sub_step"]):
+  awaiting_property    — need the listing link or a property/product photo
+  awaiting_agent_photo — need the user's (agent) headshot
   generating           — poster is rendering
 Then it hands off to image_post_agent's normal review/publish loop.
 """
@@ -36,12 +33,13 @@ def _send(phone: str, payload: dict, tts: bool = False) -> None:
 
 
 def wants_detailed_poster(intent: dict) -> bool:
+    if intent.get("_post_style") == "minimal":
+        return False
     if intent.get("_post_style") == "detailed":
         return True
     txt = f"{intent.get('description','')} {intent.get('style_notes','')}".lower()
     if any(k in txt for k in _POSTER_KEYWORDS):
         return True
-    # A shared listing link (Zillow etc.) with scraped photos → build the flyer.
     if intent.get("_url_provided") and (intent.get("_scraped_image_urls") or []):
         return True
     return False
@@ -60,43 +58,58 @@ def _to_s3(url: str, phone: str, kind: str) -> Optional[str]:
         return url
 
 
-def start(phone: str, session: UserSession, intent: dict) -> dict:
-    intent["reel_type"] = intent.get("reel_type")  # no-op, keep shape
+def _refresh_details(intent: dict, session: UserSession) -> None:
+    """(Re)extract poster fields from the message + whatever scraped context we have."""
     brand = session.brand_profile() if session.onboarding_complete else {}
-    description = intent.get("description", "") or ""
     scraped_ctx = "\n".join(intent.get("_scraped_summaries") or [])
+    intent["_poster_details"] = groq_ai.extract_poster_details(
+        intent.get("description", "") or "", scraped_ctx, brand)
+
+
+def start(phone: str, session: UserSession, intent: dict) -> dict:
+    intent["_post_style"] = "detailed"
+    intent["_poster_logo"] = session.brand_assets[0] if session.brand_assets else None
+
+    # Pick up anything already provided (scraped listing photos, uploaded images)
     scraped_imgs = intent.get("_scraped_image_urls") or []
     media_urls = intent.get("_media_urls") or []
     media_types = intent.get("_media_types") or []
-    uploaded_imgs = [u for u, t in zip(media_urls, media_types) if t.startswith("image/")]
+    uploaded = [u for u, t in zip(media_urls, media_types) if t.startswith("image/")]
 
-    # Property/product image: scraped listing photo first, else an uploaded image
-    prop_img = scraped_imgs[0] if scraped_imgs else (uploaded_imgs[0] if uploaded_imgs else None)
-    # An agent headshot: an uploaded image that ISN'T the property image
-    agent_photo = None
-    if scraped_imgs and uploaded_imgs:
-        agent_photo = uploaded_imgs[0]
-    elif len(uploaded_imgs) > 1:
-        agent_photo = uploaded_imgs[1]
+    if scraped_imgs:
+        intent["_poster_prop_img"] = _to_s3(scraped_imgs[0], phone, "poster_property")
+        if uploaded:  # an uploaded image alongside a listing is likely the headshot
+            intent["_poster_agent_photo"] = _to_s3(uploaded[0], phone, "poster_agent")
+    elif uploaded:
+        intent["_poster_prop_img"] = _to_s3(uploaded[0], phone, "poster_property")
+        if len(uploaded) > 1:
+            intent["_poster_agent_photo"] = _to_s3(uploaded[1], phone, "poster_agent")
 
-    # Extract structured poster fields from the message + scraped listing facts
-    details = groq_ai.extract_poster_details(description, scraped_ctx, brand)
+    _refresh_details(intent, session)
+    return _advance(phone, session, intent)
 
-    intent["_poster_details"] = details
-    intent["_poster_prop_img"] = _to_s3(prop_img, phone, "poster_property") if prop_img else None
-    intent["_poster_logo"] = session.brand_assets[0] if session.brand_assets else None
 
-    if not agent_photo:
+def _advance(phone: str, session: UserSession, intent: dict) -> dict:
+    """Ask for whatever's still missing, in order, then render."""
+    if not intent.get("_poster_prop_img") and not intent.get("_poster_prop_skipped"):
+        intent["_sub_step"] = "awaiting_property"
+        session.agent_intent = intent
+        session.step = STEP_AGENT_IMAGE_POST
+        save_session(session)
+        return {"kind": "text",
+                "text": ("🖼 *Detailed poster* — let's build your flyer!\n\n"
+                         "🏠 Paste your *Zillow / listing link* (I'll pull the price, specs & photo), "
+                         "or send a *property photo*.\n_(Reply *skip* to design without a property photo.)_")}
+
+    if not intent.get("_poster_agent_photo") and not intent.get("_poster_photo_skipped"):
         intent["_sub_step"] = "awaiting_agent_photo"
         session.agent_intent = intent
         session.step = STEP_AGENT_IMAGE_POST
         save_session(session)
         return {"kind": "text",
-                "text": ("🖼 *Detailed poster* — this style features YOUR photo on the flyer.\n\n"
-                         "📸 Send a clear headshot of yourself and I'll build it.\n"
-                         "_(Or reply *skip* to make it without your photo.)_")}
+                "text": ("📸 Now send a clear *headshot of yourself* — it goes on the flyer with your contact info.\n"
+                         "_(Or reply *skip* to leave your photo off.)_")}
 
-    intent["_poster_agent_photo"] = _to_s3(agent_photo, phone, "poster_agent")
     return _kickoff(phone, session, intent)
 
 
@@ -105,16 +118,43 @@ def handle_step(phone: str, session: UserSession, clean: str, button_payload: Op
     intent = session.agent_intent or {}
     sub_step = intent.get("_sub_step", "")
     low = (button_payload or clean or "").strip().lower()
+    img = next((u for u, t in zip(media_urls, media_types) if t.startswith("image/")), None)
+
+    if sub_step == "awaiting_property":
+        # a listing link?
+        try:
+            from tools.url_context import find_all_urls, scrape_url as _scrape_url
+            urls = find_all_urls(clean or "")
+        except Exception:
+            urls = []
+        if urls:
+            _send(phone, {"kind": "text", "text": "🔍 Found a link — pulling the photos and details…"})
+            ctx = _scrape_url(urls[0], phone)
+            if ctx.get("ok") and ctx.get("image_urls"):
+                intent["_scraped_image_urls"] = ctx["image_urls"]
+                intent["_scraped_summaries"] = [ctx.get("summary", "")]
+                intent["_poster_prop_img"] = _to_s3(ctx["image_urls"][0], phone, "poster_property")
+                _refresh_details(intent, session)
+            else:
+                _send(phone, {"kind": "text", "text": "⚠️ Couldn't pull photos from that link — send a property photo, or reply *skip*."})
+                return _advance(phone, session, intent)
+            return _advance(phone, session, intent)
+        if img:
+            intent["_poster_prop_img"] = _to_s3(img, phone, "poster_property")
+            return _advance(phone, session, intent)
+        if low in ("skip", "no", "none"):
+            intent["_poster_prop_skipped"] = True
+            return _advance(phone, session, intent)
+        return {"kind": "text", "text": "🏠 Paste your Zillow/listing link or send a property photo, or reply *skip*."}
 
     if sub_step == "awaiting_agent_photo":
-        img = next((u for u, t in zip(media_urls, media_types) if t.startswith("image/")), None)
         if img:
             intent["_poster_agent_photo"] = _to_s3(img, phone, "poster_agent")
-            return _kickoff(phone, session, intent)
+            return _advance(phone, session, intent)
         if low in ("skip", "no", "none", "without"):
-            intent["_poster_agent_photo"] = None
-            return _kickoff(phone, session, intent)
-        return {"kind": "text", "text": "📸 Please send a headshot photo, or reply *skip* to build it without your photo."}
+            intent["_poster_photo_skipped"] = True
+            return _advance(phone, session, intent)
+        return {"kind": "text", "text": "📸 Send a headshot photo, or reply *skip* to leave it off."}
 
     if sub_step == "generating":
         return {"kind": "text", "text": "⏳ Still designing your poster — hang tight!"}

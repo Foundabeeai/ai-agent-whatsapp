@@ -97,6 +97,18 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
             "text": "📸 What's this post about? Give me a quick description and I'll handle the rest.",
         }
 
+    # Ask minimal vs detailed once (auto-detect above already handled keyword/link)
+    if not intent.get("_post_style"):
+        intent["_sub_step"] = "awaiting_post_style"
+        session.agent_intent = intent
+        save_session(session)
+        return {"kind": "text", "text": (
+            "🎨 Which style?\n\n"
+            "1️⃣ *Minimal* — clean, single-image post\n"
+            "2️⃣ *Detailed* — a designed marketing poster/flyer with price, features, your photo & "
+            "contact (great for listings)\n\n"
+            "Reply *1* or *2*.")}
+
     # If user says "use this image" and actually sent one → upload + go
     if has_image and use_ref:
         intent["_sub_step"] = "generating"
@@ -206,8 +218,26 @@ def handle_step(
     sub_step = intent.get("_sub_step", "")
     msg      = (button_payload or clean or "").strip()
 
+    # ── Minimal vs detailed style choice ───────────────────────────────────
+    if sub_step == "awaiting_post_style":
+        choice = msg.lower()
+        if choice in ("2", "detailed", "detail", "poster", "flyer", "b", "two"):
+            intent["_post_style"] = "detailed"
+            intent["_sub_step"] = ""
+            session.agent_intent = intent
+            save_session(session)
+            from agents import poster_agent
+            return poster_agent.start(phone, session, intent)
+        # anything else → minimal (default); re-enter normal flow with style locked
+        intent["_post_style"] = "minimal"
+        intent["_sub_step"] = ""
+        session.agent_intent = intent
+        save_session(session)
+        return start(phone, session, intent)
+
     # ── Detailed poster sub-agent owns these steps ─────────────────────────
-    if sub_step in ("awaiting_agent_photo", "generating"):
+    if sub_step in ("awaiting_property", "awaiting_agent_photo", "generating") and \
+            intent.get("_post_style") == "detailed":
         from agents import poster_agent
         return poster_agent.handle_step(phone, session, clean, button_payload,
                                         media_urls, media_types, voice_confirmed)
