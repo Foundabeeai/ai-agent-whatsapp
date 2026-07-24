@@ -1875,6 +1875,56 @@ def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 @traceable(run_type="chain", name="classify_post_review")
+@traceable
+def extract_poster_details(description: str, scraped_ctx: str = "", brand: dict | None = None) -> dict:
+    """
+    Pull structured fields for a DETAILED marketing-flyer poster from the user's
+    message + any scraped listing context (Zillow etc.). Returns:
+      {offer, price, title, tagline, features[], extras_title, extras[], callout,
+       contact:{name,role,phone,email,company}, missing:[fields still needed]}
+    Only uses facts present in the input — never invents prices/specs. Unknown
+    fields come back "" (and listed in `missing`).
+    """
+    import json as _json, re as _re
+    brand = brand or {}
+    system = (
+        "You extract fields for a real-estate / product marketing FLYER from the user's message and any "
+        "scraped listing data. Use ONLY facts that are present — never invent a price, address, phone, or "
+        "spec. Leave unknown fields as empty strings/arrays and list the important missing ones.\n"
+        "Return ONLY JSON: {\n"
+        '  "offer": "short banner e.g. Limited Time Offer! or \"\"",\n'
+        '  "price": "e.g. $709,900 or \"\"",\n'
+        '  "title": "product/property name headline, e.g. THE SPARROW",\n'
+        '  "tagline": "short tagline",\n'
+        '  "features": ["short feature bullets: beds, baths, sq ft, units, etc"],\n'
+        '  "extras_title": "title for a boxed extras section e.g. Appliance Package or \"\"",\n'
+        '  "extras": ["included items"],\n'
+        '  "callout": "a highlight badge line e.g. Perfect for investors!",\n'
+        '  "contact": {"name":"","role":"","phone":"","email":"","company":""},\n'
+        '  "missing": ["field names still needed for a great poster"]\n'
+        "}"
+    )
+    user = (
+        f"Brand: {brand.get('brand_name') or ''} | colors: {brand.get('brand_colors') or ''}\n"
+        f"User message:\n{description}\n\n"
+        f"Scraped listing context:\n{scraped_ctx or '(none)'}"
+    )
+    raw = _chat(system, user, temperature=0.3, max_tokens=1200)
+    try:
+        clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+        data = _json.loads(clean)
+        data.setdefault("contact", {})
+        data.setdefault("features", [])
+        data.setdefault("extras", [])
+        data.setdefault("missing", [])
+        return data
+    except Exception:
+        return {"offer": "", "price": "", "title": (brand.get("brand_name") or ""), "tagline": "",
+                "features": [], "extras_title": "", "extras": [], "callout": "",
+                "contact": {"name": "", "role": "", "phone": "", "email": "", "company": ""},
+                "missing": ["details"]}
+
+
 def classify_post_review(user_message: str, caption: str = "", content_kind: str = "post") -> tuple[str, str]:
     """
     Understand what the user wants after seeing a generated post/carousel — the

@@ -73,6 +73,11 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
     Harness calls this when it's confident the user wants an image post.
     Either kicks off generation immediately or asks the one thing that's missing.
     """
+    # Detailed poster / flyer style → dedicated sub-agent (gpt-image-2)
+    from agents import poster_agent
+    if poster_agent.wants_detailed_poster(intent):
+        return poster_agent.start(phone, session, intent)
+
     description  = intent.get("description", "").strip()
     use_ref      = intent.get("use_reference_image", False)
     media_urls   = intent.get("_media_urls", [])
@@ -200,6 +205,12 @@ def handle_step(
     intent   = session.agent_intent or {}
     sub_step = intent.get("_sub_step", "")
     msg      = (button_payload or clean or "").strip()
+
+    # ── Detailed poster sub-agent owns these steps ─────────────────────────
+    if sub_step in ("awaiting_agent_photo", "generating"):
+        from agents import poster_agent
+        return poster_agent.handle_step(phone, session, clean, button_payload,
+                                        media_urls, media_types, voice_confirmed)
 
     # ── Waiting for product image ──────────────────────────────────────────
     if sub_step == "awaiting_product_image":
