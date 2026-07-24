@@ -1875,7 +1875,7 @@ def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 @traceable(run_type="chain", name="classify_post_review")
-@traceable
+@traceable(run_type="chain", name="extract_poster_details")
 def extract_poster_details(description: str, scraped_ctx: str = "", brand: dict | None = None) -> dict:
     """
     Pull structured fields for a DETAILED marketing-flyer poster from the user's
