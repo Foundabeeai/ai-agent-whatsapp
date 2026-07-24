@@ -50,7 +50,9 @@ def _build_prompt(details: dict, brand: dict, has_property: bool, has_agent: boo
     if has_property:
         ref_notes.append("the FIRST reference image is the real property/product photo — feature it prominently and keep it unchanged")
     if has_agent:
-        ref_notes.append("the agent headshot reference image must appear as a clean cut-out of the SAME person in the contact area")
+        ref_notes.append("the agent headshot reference image must appear as a clean cut-out of the SAME person "
+                         "(same face/identity) in the contact area, professionally dressed in a sharp business "
+                         "SUIT and tie — restyle their outfit to formal business attire while keeping the face identical")
     if has_logo:
         ref_notes.append("use the brand logo reference for the top logo area")
     ref_block = (" Reference images: " + "; ".join(ref_notes) + ".") if ref_notes else ""
@@ -74,6 +76,7 @@ def _build_prompt(details: dict, brand: dict, has_property: bool, has_agent: boo
         f"{_line('  Title/role', contact.get('role'))}"
         f"{_line('  Phone', contact.get('phone'))}"
         f"{_line('  Email', contact.get('email'))}"
+        f"{_line('  Website', contact.get('website'))}"
         f"{_line('  Brokerage/company', contact.get('company'))}"
         "\nRules: render ALL text exactly as given, spelled correctly, sharp and readable. "
         "Balanced professional composition, generous whitespace, real-estate-flyer aesthetic. "

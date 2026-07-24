@@ -1875,6 +1875,36 @@ def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 @traceable(run_type="chain", name="classify_post_review")
+@traceable(run_type="chain", name="parse_contact_details")
+def parse_contact_details(text: str, existing: dict | None = None) -> dict:
+    """
+    Parse a free-text message into contact-card fields, merging onto `existing`
+    (so a user can send just an update). Returns
+    {name, role, email, mobile, website, company} — untouched fields keep their
+    existing value; nothing is invented.
+    """
+    import json as _json, re as _re
+    base = {k: (existing or {}).get(k, "") for k in ("name", "role", "email", "mobile", "website", "company")}
+    if not (text or "").strip():
+        return base
+    system = (
+        "Extract contact-card fields from the message. Return ONLY JSON with keys "
+        "name, role, email, mobile, website, company. Include a field ONLY if the "
+        "message clearly provides it; otherwise use empty string. Never invent."
+    )
+    raw = _chat(system, f"Message:\n{text}", temperature=0.1, max_tokens=400)
+    try:
+        clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
+        got = _json.loads(clean)
+        for k in base:
+            v = str(got.get(k, "") or "").strip()
+            if v:
+                base[k] = v
+    except Exception:
+        pass
+    return base
+
+
 @traceable(run_type="chain", name="extract_poster_details")
 def extract_poster_details(description: str, scraped_ctx: str = "", brand: dict | None = None) -> dict:
     """

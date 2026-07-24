@@ -236,7 +236,8 @@ def handle_step(
         return start(phone, session, intent)
 
     # ── Detailed poster sub-agent owns these steps ─────────────────────────
-    if sub_step in ("awaiting_property", "awaiting_agent_photo", "generating") and \
+    if sub_step in ("awaiting_property", "awaiting_contact_confirm", "awaiting_contact",
+                    "awaiting_agent_photo", "generating") and \
             intent.get("_post_style") == "detailed":
         from agents import poster_agent
         return poster_agent.handle_step(phone, session, clean, button_payload,

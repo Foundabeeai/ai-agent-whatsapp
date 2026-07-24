@@ -728,6 +728,35 @@ def get_post_style_skill(phone_number: str) -> dict | None:
         return None
 
 
+def save_contact_card(phone_number: str, card: dict) -> None:
+    """Persist a user's contact/agent card (name, role, email, mobile, website,
+    company) so posters/carousels can reuse it and confirm it next time."""
+    try:
+        db = get_db()
+        clean = {k: v for k, v in (card or {}).items() if v}
+        clean["phone_number"] = phone_number
+        clean["updated_at"] = datetime.now(timezone.utc)
+        db.contact_cards.update_one(
+            {"phone_number": phone_number},
+            {"$set": clean},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
+
+def get_contact_card(phone_number: str) -> dict | None:
+    """Retrieve the stored contact card for a phone number, or None."""
+    try:
+        db = get_db()
+        doc = db.contact_cards.find_one({"phone_number": phone_number})
+        if not doc:
+            return None
+        return {k: doc.get(k, "") for k in ("name", "role", "email", "mobile", "website", "company")}
+    except Exception:
+        return None
+
+
 def get_post_style_compositor(phone_number: str) -> dict | None:
     """Retrieve the compositor block (pixel-ready params) for a phone number."""
     try:

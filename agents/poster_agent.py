@@ -18,8 +18,22 @@ import logging
 import threading
 from typing import Optional
 
+import db
 from session_store import UserSession, save_session, STEP_AGENT_IMAGE_POST
 from tools import aws_storage, groq_ai, detailed_poster
+
+
+def _card_has_contact(card: dict) -> bool:
+    return bool(card and (card.get("email") or card.get("mobile") or card.get("website")))
+
+
+def _card_summary(card: dict) -> str:
+    rows = [
+        ("Name", card.get("name")), ("Title", card.get("role")),
+        ("Email", card.get("email")), ("Mobile", card.get("mobile")),
+        ("Website", card.get("website")), ("Company", card.get("company")),
+    ]
+    return "\n".join(f"• {k}: {v}" for k, v in rows if v) or "• (nothing saved yet)"
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +100,8 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
             intent["_poster_agent_photo"] = _to_s3(uploaded[1], phone, "poster_agent")
 
     _refresh_details(intent, session)
+    # Load any saved contact card for this phone (name/role/email/mobile/website/company)
+    intent["_contact_card"] = db.get_contact_card(phone) or {}
     return _advance(phone, session, intent)
 
 
@@ -100,6 +116,27 @@ def _advance(phone: str, session: UserSession, intent: dict) -> dict:
                 "text": ("🖼 *Detailed poster* — let's build your flyer!\n\n"
                          "🏠 Paste your *Zillow / listing link* (I'll pull the price, specs & photo), "
                          "or send a *property photo*.\n_(Reply *skip* to design without a property photo.)_")}
+
+    # ── Contact details: confirm saved card, or collect once ──
+    if not intent.get("_contact_done"):
+        card = intent.get("_contact_card") or {}
+        if _card_has_contact(card):
+            intent["_sub_step"] = "awaiting_contact_confirm"
+            session.agent_intent = intent
+            session.step = STEP_AGENT_IMAGE_POST
+            save_session(session)
+            return {"kind": "text",
+                    "text": ("📇 I'll use your saved contact details:\n\n" + _card_summary(card) +
+                             "\n\nReply *yes* to use these, or send any *updates* "
+                             "(e.g. _new mobile 902-555-1234_).")}
+        intent["_sub_step"] = "awaiting_contact"
+        session.agent_intent = intent
+        session.step = STEP_AGENT_IMAGE_POST
+        save_session(session)
+        return {"kind": "text",
+                "text": ("📇 A few details for your flyer's contact block. Send in one message:\n"
+                         "• Your *name* & *title* (e.g. Realtor®)\n• *Email*\n• *Mobile number*\n"
+                         "• *Website* (if any)\n• *Brokerage/company* (if any)")}
 
     if not intent.get("_poster_agent_photo") and not intent.get("_poster_photo_skipped"):
         intent["_sub_step"] = "awaiting_agent_photo"
@@ -147,6 +184,34 @@ def handle_step(phone: str, session: UserSession, clean: str, button_payload: Op
             return _advance(phone, session, intent)
         return {"kind": "text", "text": "🏠 Paste your Zillow/listing link or send a property photo, or reply *skip*."}
 
+    if sub_step == "awaiting_contact_confirm":
+        card = intent.get("_contact_card") or {}
+        if low in ("yes", "y", "correct", "yep", "use these", "use them", "looks good", "confirm", "ok", "okay"):
+            intent["_contact_done"] = True
+            db.save_contact_card(phone, card)
+            return _advance(phone, session, intent)
+        # otherwise treat the message as an update
+        card = groq_ai.parse_contact_details(clean, card)
+        intent["_contact_card"] = card
+        intent["_contact_done"] = True
+        db.save_contact_card(phone, card)
+        _send(phone, {"kind": "text", "text": "✅ Updated your details."})
+        return _advance(phone, session, intent)
+
+    if sub_step == "awaiting_contact":
+        if low in ("skip", "none", "no"):
+            intent["_contact_done"] = True
+            return _advance(phone, session, intent)
+        card = groq_ai.parse_contact_details(clean, intent.get("_contact_card") or {})
+        intent["_contact_card"] = card
+        if _card_has_contact(card):
+            intent["_contact_done"] = True
+            db.save_contact_card(phone, card)
+            _send(phone, {"kind": "text", "text": "✅ Saved your contact details."})
+            return _advance(phone, session, intent)
+        return {"kind": "text",
+                "text": "📇 I still need at least an *email* or *mobile number* — please send them (or reply *skip*)."}
+
     if sub_step == "awaiting_agent_photo":
         if img:
             intent["_poster_agent_photo"] = _to_s3(img, phone, "poster_agent")
@@ -178,6 +243,15 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         brand = session.brand_profile() if session.onboarding_complete else {}
         details = intent.get("_poster_details") or {}
 
+        # Merge the saved/collected contact card into the poster's contact block
+        card = intent.get("_contact_card") or {}
+        contact = details.setdefault("contact", {})
+        for card_key, det_key in (("name", "name"), ("role", "role"), ("email", "email"),
+                                  ("mobile", "phone"), ("website", "website"), ("company", "company")):
+            if card.get(card_key):
+                contact[det_key] = card[card_key]
+        website = card.get("website") or session.website_url or ""
+
         out = detailed_poster.generate_detailed_poster(
             details=details,
             property_image_url=intent.get("_poster_prop_img"),
@@ -199,7 +273,7 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
 
         caption = groq_ai.generate_caption_with_style(
             intent.get("description", ""), "image_post",
-            website_url=session.website_url or "", style_skill=None)
+            website_url=website, style_skill=None)
 
         intent["_sub_step"] = ""
         session.agent_intent = intent
