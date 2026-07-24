@@ -495,6 +495,13 @@ def _generate_with_image_bg(
             "condo", "villa", "for sale", "for rent", "realty", "realtor", "bedroom"))
         preserve_subject = ref_from_scrape or _is_real_estate or intent.get("_url_provided", False)
 
+        # Art-director brief (used by BOTH the preserve-square path below and the
+        # restage path further down) — define once so neither reference is unbound.
+        style_ctx = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
+        ad_brief  = description + scraped_ctx
+        if style_ctx:
+            ad_brief += f"\n\nStyle guidance:\n{style_ctx}"
+
         # ── Preserve the REAL subject, output a professional 1:1 ───────────────
         # If the photo is already ~square, use it as-is (100% unchanged).
         # If it's not square, use SeedDream in strict-preserve mode to compose a
@@ -544,12 +551,8 @@ def _generate_with_image_bg(
             _finish_generation(phone, session, intent, s3_urls, caption, [])
             return
 
-        # Art director — fold scraped product facts into the brief
+        # Art director — fold scraped product facts into the brief (ad_brief built above)
         _send(phone, {"kind": "text", "text": "🎬 Art director analyzing the image..."})
-        style_ctx = groq_ai.style_skill_to_prompt_context(style_skill) if style_skill else ""
-        ad_brief  = description + scraped_ctx
-        if style_ctx:
-            ad_brief += f"\n\nStyle guidance:\n{style_ctx}"
         ad_result = groq_ai.art_director_analyze(
             image_url=ref_url,
             description=ad_brief,
