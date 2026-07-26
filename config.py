@@ -145,6 +145,9 @@ USE_LANGCHAIN = _get("USE_LANGCHAIN", "").lower() in ("1", "true", "yes", "on")
 
 # Groq vision model for product image analysis
 GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
+# Groq "compound" models have built-in web search — used to pull real, current
+# industry/market data into content. Falls back gracefully if unavailable.
+GROQ_SEARCH_MODEL = _get("GROQ_SEARCH_MODEL", "groq/compound-mini")
 
 # App
 PORT = _get_int("PORT", 5000)

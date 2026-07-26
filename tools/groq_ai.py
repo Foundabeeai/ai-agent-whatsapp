@@ -516,6 +516,32 @@ def generate_poster_text(description: str, brand: dict) -> dict:
         }
 
 
+@traceable(run_type="chain", name="web_research")
+def web_research(query: str, max_tokens: int = 800) -> str:
+    """
+    Pull real, current facts from the web via a Groq compound (web-search) model.
+    Returns a concise factual brief (bullets with real numbers/stats) or "" on
+    failure — callers must treat it as optional enrichment.
+    """
+    if not config.GROQ_API_KEY:
+        return ""
+    try:
+        resp = _client().chat.completions.create(
+            model=config.GROQ_SEARCH_MODEL,
+            messages=[{"role": "user", "content": (
+                "Search the web and return 5-8 concise, CURRENT, factual bullet points with REAL "
+                "numbers/statistics relevant to the topic below — market data, median prices, trends, "
+                "percentages, notable local facts, comparables. Only verifiable facts; include the figure "
+                "and a short context. No fluff, no intro/outro.\n\nTopic: " + query)}],
+            temperature=0.2,
+            max_tokens=max_tokens,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.warning("web_research failed (%s): %s", config.GROQ_SEARCH_MODEL, exc)
+        return ""
+
+
 def generate_research_carousel_content(topic: str, brand: dict, slide_count: int = 3) -> dict:
     """
     Generate a punchy, hook-driven carousel script. Each slide carries ONE short
@@ -537,39 +563,38 @@ def generate_research_carousel_content(topic: str, brand: dict, slide_count: int
     import re as _re
 
     system = (
-        "You are a viral Instagram carousel writer. You write CLEAN, MINIMAL, hook-driven "
-        "carousels where each slide shows ONE short punchy line that makes people swipe.\n\n"
-        "HARD RULES:\n"
-        "- Every line is SHORT: the headline is max 7 words. No paragraphs, no filler.\n"
-        "- The slides tell ONE flowing story: slide 1 sets up curiosity, each next slide "
-        "continues the thought, the last slide pays it off with a call to action.\n"
-        "- Think hooks, not essays: 'You walked right past it.' → 'Most buyers do.' → "
-        "'But this one's different.' Each line builds on the last.\n"
-        "- subtext is OPTIONAL and tiny (max 9 words). Use it only when it adds punch; "
-        "otherwise leave it an empty string.\n"
-        "- If real facts about the subject are provided, weave the most attractive ones in "
-        "(price, location, a standout feature) — but keep every line short and seductive.\n"
-        "- No hashtags, no emojis inside slide text, no quotation marks.\n"
+        "You are a top-tier Instagram carousel strategist writing PROFESSIONAL, information-rich "
+        "carousels that read like an expert authored them — the kind that get saved and shared.\n\n"
+        "RULES:\n"
+        "- Each slide = a strong, specific HEADLINE (max ~8 words) + a BODY of ONE tight, informative "
+        "sentence (roughly 14-26 words) that delivers a REAL, concrete insight — a number, stat, price, "
+        "feature, or market fact. Not vague hype.\n"
+        "- USE THE PROVIDED FACTS AND RESEARCH: weave in specific figures (prices, %, sq ft, beds/baths, "
+        "median/market data, neighborhood or industry stats). Every body line should teach something real.\n"
+        "- NEVER invent numbers. Only use figures present in the facts/research provided. If none fit a "
+        "slide, make the body a concrete qualitative benefit — still specific, never generic filler.\n"
+        "- The slides flow as one narrative: cover hook → build value slide by slide → final CTA.\n"
+        "- Professional, credible, confident tone. No hashtags, no emojis in slide text, no quotation marks.\n"
         "- Output ONLY valid JSON. No markdown, no extra keys."
     )
 
     brand_ctx = (
         f"Brand: {brand.get('brand_name') or 'the brand'}\n"
         f"Industry/niche: {brand.get('brand_description') or ''}\n"
-        f"Tone: {brand.get('brand_voice') or 'bold and inviting'}\n"
+        f"Tone: {brand.get('brand_voice') or 'professional, credible, confident'}\n"
     )
 
     user = (
         f"{brand_ctx}\n"
-        f"Carousel topic / facts:\n{topic}\n\n"
+        f"Carousel topic + REAL facts/research to use (cite specific numbers from here):\n{topic}\n\n"
         f"Number of slides (not counting the cover hook): {slide_count}\n\n"
-        "Write a flowing, hook-driven carousel. Return JSON exactly:\n"
-        '{"hook": "short cover line", '
-        '"slides": [{"headline": "short punchy line", "subtext": ""}, ...], '
+        "Write a professional, data-rich carousel. Return JSON exactly:\n"
+        '{"hook": "strong specific cover line", '
+        '"slides": [{"headline": "specific headline", "subtext": "one informative sentence with a real fact"}, ...], '
         '"cta": "final call to action line"}'
     )
 
-    raw = _chat(system, user, temperature=0.7, max_tokens=900)
+    raw = _chat(system, user, temperature=0.6, max_tokens=1400)
     try:
         clean = _re.sub(r"```[a-z]*", "", raw).strip().strip("`")
         data = _json.loads(clean)

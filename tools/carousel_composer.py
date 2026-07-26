@@ -463,6 +463,26 @@ def _gradient_overlay(w: int, h: int, top_alpha: int = 20, bot_alpha: int = 200)
 # SLIDE 1 — Cover / Hook
 # ─────────────────────────────────────────────────
 
+def _stamp_contact_footer(img: Image.Image, text: str) -> Image.Image:
+    """Draw a small contact bar (name • phone • email) at the bottom of a slide."""
+    if not text:
+        return img
+    W, H = img.size
+    im = img.convert("RGBA")
+    bar_h = 66
+    bar = Image.new("RGBA", (W, bar_h), (0, 0, 0, 165))
+    im.alpha_composite(bar, (0, H - bar_h))
+    d = ImageDraw.Draw(im)
+    size = 28
+    fnt = _fnt(size, "bold")
+    while size > 16 and d.textlength(text, font=fnt) > W - 60:
+        size -= 2
+        fnt = _fnt(size, "bold")
+    tw = d.textlength(text, font=fnt)
+    d.text(((W - tw) / 2, H - bar_h + (bar_h - size) / 2 - 2), text, font=fnt, fill=(255, 255, 255, 240))
+    return im.convert("RGB")
+
+
 def _cover_slide(hook_text: str, category: str, total: int, scheme: dict,
                  username: str, brand_name: str, avatar: Optional[Image.Image],
                  bg_bytes: Optional[bytes],
@@ -771,9 +791,11 @@ def make_research_carousel(
     extra_bg_bytes: Optional[list[bytes]] = None,
     style_compositor: Optional[dict] = None,
     add_badge: bool = False,
+    contact_footer: str = "",
 ) -> list[bytes]:
     """
     Render a full research carousel. Returns list of JPEG bytes (one per slide).
+    contact_footer : optional 'Name • Phone • Email' bar drawn on EVERY slide.
 
     carousel_content  : { "hook": str, "slides": [...] }
     brand_colors      : { "primary": "#hex", "secondary": "#hex", "accent": "#hex" }
@@ -827,6 +849,7 @@ def make_research_carousel(
         bg_bytes    = hook_image_bytes,
         comp        = comp,
     )
+    cover = _stamp_contact_footer(cover, contact_footer)
     buf = BytesIO(); cover.save(buf, "JPEG", quality=92, optimize=True)
     result.append(buf.getvalue())
 
@@ -858,6 +881,7 @@ def make_research_carousel(
             bg_bytes   = bg_for_slide,
             comp       = comp,
         )
+        slide_img = _stamp_contact_footer(slide_img, contact_footer)
         buf = BytesIO(); slide_img.save(buf, "JPEG", quality=92, optimize=True)
         result.append(buf.getvalue())
 

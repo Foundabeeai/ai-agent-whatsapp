@@ -331,6 +331,14 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         else:
             _send(phone, {"kind": "text", "text": "📊 Researching data and crafting slides..."})
             enriched_description = description + scraped_ctx
+        # Pull REAL market/industry data from the web to make the slides credible
+        _send(phone, {"kind": "text", "text": "🔎 Researching real market data & facts…"})
+        _research = groq_ai.web_research(
+            f"{description} — key facts, current market data, prices and statistics"
+            + (f". Context: {scraped_summaries[0][:400]}" if scraped_summaries else ""))
+        if _research:
+            enriched_description += "\n\nREAL web research — use these actual figures verbatim:\n" + _research
+
         # Reuse the user's saved contact card → add a real "Get in touch" final slide
         _card = db.get_contact_card(phone)
         if _card and (_card.get("email") or _card.get("mobile") or _card.get("website")):
@@ -414,6 +422,12 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         if not hook_bytes:
             raise RuntimeError("Background image generation failed")
 
+        # Contact footer on every slide (name • mobile • email) from the saved card
+        _footer = ""
+        if _card:
+            _fp = [_card.get("name"), _card.get("mobile"), _card.get("email")]
+            _footer = "   •   ".join(p for p in _fp if p)
+
         # Step 3: Compose carousel slides with Pillow
         _send(phone, {"kind": "text", "text": f"🖼 Rendering {total_slides} slides..."})
         slide_images = make_research_carousel(
@@ -426,6 +440,7 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
             avatar_url=session.brand_assets[0] if session.brand_assets else None,
             style_compositor=compositor,
             add_badge=intent.get("_add_badge", False),
+            contact_footer=_footer,
         )
 
         # Upload slides
