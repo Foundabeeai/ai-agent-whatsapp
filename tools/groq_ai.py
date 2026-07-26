@@ -1955,6 +1955,51 @@ def extract_poster_details(description: str, scraped_ctx: str = "", brand: dict 
                 "missing": ["details"]}
 
 
+@traceable(run_type="chain", name="critique_image")
+def critique_image(image_url: str, description: str = "", brand: dict | None = None) -> dict:
+    """
+    VLM art-director critique of a generated post the user didn't like. Returns
+    {"summary": str, "suggestions": [str, ...]} — concrete, actionable changes to
+    make it more professional (each phrased so it can be used as an edit instruction).
+    """
+    import json as _json, re as _re
+    brand = brand or {}
+    try:
+        resp = _client().chat.completions.create(
+            model=config.GROQ_VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": (
+                        "You are an elite brand art director reviewing this social-media "
+                        f"post (topic: {description or 'n/a'}; brand: {brand.get('brand_name') or 'n/a'}). "
+                        "The client feels it's not good enough. Give a short honest critique and 3-4 "
+                        "SPECIFIC, actionable fixes that would make it look more professional "
+                        "(composition, lighting, color, typography, clutter, focal point, whitespace, "
+                        "text legibility). Each fix must be phrased as a direct edit instruction we can "
+                        "apply (e.g. 'brighten and add warm lighting', 'remove the busy background clutter', "
+                        "'increase contrast on the headline text').\n"
+                        'Return ONLY JSON: {"summary":"one-line critique","suggestions":["fix 1","fix 2","fix 3"]}'
+                    )},
+                ],
+            }],
+            temperature=0.4,
+            max_tokens=600,
+        )
+        raw = _re.sub(r"```[a-z]*\n?", "", resp.choices[0].message.content or "").strip().strip("`")
+        data = _json.loads(raw)
+        sugg = [str(s).strip() for s in (data.get("suggestions") or []) if str(s).strip()][:4]
+        return {"summary": str(data.get("summary") or "").strip(), "suggestions": sugg}
+    except Exception as exc:
+        logger.warning("critique_image failed: %s", exc)
+        return {"summary": "", "suggestions": [
+            "brighten the image and add soft, professional lighting",
+            "simplify the background and reduce clutter for a cleaner look",
+            "increase contrast and make the main subject the clear focal point",
+        ]}
+
+
 def classify_post_review(user_message: str, caption: str = "", content_kind: str = "post") -> tuple[str, str]:
     """
     Understand what the user wants after seeing a generated post/carousel — the
@@ -1977,6 +2022,13 @@ def classify_post_review(user_message: str, caption: str = "", content_kind: str
         return "regenerate", ""
     if low in {"publish", "post", "post now", "publish now", "go live", "post it"}:
         return "publish", ""
+    # Vague dissatisfaction with no specific instruction → offer VLM suggestions
+    if low in {"i don't like it", "i dont like it", "don't like it", "dont like it", "not good",
+               "hate it", "hate this", "meh", "bad", "terrible", "not nice", "ugly",
+               "make it better", "improve it", "improve", "more professional",
+               "make it professional", "make it more professional", "not feeling it",
+               "it doesn't feel good", "it doesnt feel good", "doesn't look good", "doesnt look good"}:
+        return "improve", ""
 
     system = (
         f"The user was just shown a generated {content_kind} (image + caption) and replied. "
@@ -1984,16 +2036,17 @@ def classify_post_review(user_message: str, caption: str = "", content_kind: str
         '{"action": "...", "value": "..."}\n\n'
         "action options:\n"
         "  approve      — they're happy with the image as-is\n"
-        "  edit_image   — they want to CHANGE how the image LOOKS. Examples: 'make it brighter', "
-        "'bigger logo', 'change the background to a beach', 'more vibrant', 'remove the text', "
-        "'warmer tones', 'move the product to the left', 'add sunlight', 'less cluttered'. "
-        "Put the exact requested change in value.\n"
+        "  edit_image   — they want to CHANGE how the image LOOKS with a SPECIFIC instruction. Examples: "
+        "'make it brighter', 'change the background to a beach', 'remove the logo and company name', "
+        "'warmer tones', 'move the product left', 'less cluttered'. Put the exact change in value.\n"
+        "  improve      — they express DISLIKE or want it 'better'/'more professional' but did NOT say "
+        "exactly WHAT to change (e.g. 'I don't like it', 'this doesn't feel good', 'make it nicer'). "
+        "Leave value empty — we'll analyze the image and suggest specific improvements.\n"
         "  edit_caption — they want to change the CAPTION wording/text. Put the request in value.\n"
         "  regenerate   — they want a completely different, fresh image\n"
         "  publish      — they want to publish/post it now\n"
-        "Rules: if the message describes a visual change, use edit_image. If it's about the "
-        "words/caption, use edit_caption. When in doubt, prefer edit_image with the message as value. "
-        "Output ONLY the JSON."
+        "Rules: a SPECIFIC visual change → edit_image (with the change in value). Vague dissatisfaction "
+        "with no specifics → improve. Caption wording → edit_caption. Output ONLY the JSON."
     )
     user = f'Caption shown: "{caption[:200]}"\nUser said: "{msg}"'
     try:
@@ -2002,7 +2055,7 @@ def classify_post_review(user_message: str, caption: str = "", content_kind: str
         data = _json.loads(raw)
         action = str(data.get("action") or "").strip()
         value = str(data.get("value") or "").strip()
-        if action not in {"approve", "edit_image", "edit_caption", "regenerate", "publish"}:
+        if action not in {"approve", "edit_image", "edit_caption", "regenerate", "publish", "improve"}:
             action = "edit_image"
             value = value or msg
         if action in ("edit_image", "edit_caption") and not value:

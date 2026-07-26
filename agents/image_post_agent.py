@@ -333,17 +333,56 @@ def handle_step(
     if sub_step in ("awaiting_review", "awaiting_caption_choice"):
         from tools.groq_ai import classify_post_review
         current_caption = intent.get("_caption", "")
+
+        # 🖼 User attached a reference image → "make it like THIS" (style reference)
+        attached = next((u for u, t in zip(media_urls, media_types) if t.startswith("image/")), None)
+        if attached:
+            intent["_style_ref_image"] = attached
+            intent["_edit_history"] = (intent.get("_edit_history") or []) + ["match the style of the reference image"]
+            intent["_sub_step"] = "generating"
+            session.agent_intent = intent
+            save_session(session)
+            threading.Thread(target=_generate_like_reference_bg, args=(phone, session, intent, attached, msg),
+                             daemon=True).start()
+            _send(phone, {"kind": "text",
+                          "text": "🎨 Got it — making a version in the style of that image...\n⏱ ~90s ☕"})
+            return {"kind": "none"}
+
+        # 💡 If we offered improvement suggestions, let them pick one / all
+        pending = intent.get("_suggestions") or []
+        if pending:
+            picked = _pick_suggestions(msg, pending)
+            if picked:
+                intent["_suggestions"] = []
+                intent["_edit_history"] = (intent.get("_edit_history") or []) + [picked]
+                intent["_sub_step"] = "editing"
+                session.agent_intent = intent
+                save_session(session)
+                threading.Thread(target=_edit_image_bg, args=(phone, session, intent, picked),
+                                 daemon=True).start()
+                _send(phone, {"kind": "text", "text": f"✏️ Applying: {picked}\n⏱ ~40s..."}, tts=voice_confirmed)
+                return {"kind": "none"}
+
         action, value = classify_post_review(msg, caption=current_caption, content_kind="post")
+
+        # 🎨 Vague dislike → VLM art-director critique + concrete suggestions
+        if action == "improve":
+            intent["_suggestions"] = []
+            session.agent_intent = intent
+            save_session(session)
+            threading.Thread(target=_suggest_improvements_bg, args=(phone, session, intent), daemon=True).start()
+            _send(phone, {"kind": "text",
+                          "text": "🔎 Let me take a proper look and suggest how to make it more professional..."})
+            return {"kind": "none"}
 
         # ✏️ Visual edit → img2img on the CURRENT image, preserving the rest
         if action == "edit_image":
             instruction = value or msg
             instr_low = instruction.lower()
 
-            # Profile-badge toggle is a compositor overlay, NOT an img2img edit — handle
-            # by re-stamping (badge is OFF by default; only added when the user asks).
-            if "badge" in instr_low or ("logo" in instr_low and any(
-                    w in instr_low for w in ("add", "remove", "put", "no ", "without", "hide"))):
+            # Profile-badge toggle is ONLY for an explicit "badge" mention. "Logo",
+            # "company name", "text" etc. are real image edits (img2img), not the badge.
+            if "badge" in instr_low:
                 wants = (any(w in instr_low for w in ("add", "put", "with", "include", "want", "show"))
                          and not any(w in instr_low for w in ("remove", "no ", "without", "don't", "dont", "hide", "take off")))
                 intent["_add_badge"] = wants
@@ -872,6 +911,88 @@ def _restamp_badge_bg(phone: str, session: UserSession, intent: dict) -> None:
         session.agent_intent = intent
         save_session(session)
         _send(phone, {"kind": "text", "text": f"😕 Couldn't update the badge ({exc}). Reply *approve* to keep it."})
+
+
+def _pick_suggestions(msg: str, pending: list[str]) -> Optional[str]:
+    """Map a reply to earlier VLM suggestions → an edit instruction, or None."""
+    import re
+    m = (msg or "").strip().lower()
+    if m in ("apply all", "all", "do it", "do all", "yes", "yes do it", "apply", "go ahead", "sure", "everything"):
+        return "; ".join(pending)
+    nums = re.findall(r"\d+", m)
+    chosen = [pending[int(n) - 1] for n in nums if 0 <= int(n) - 1 < len(pending)]
+    return "; ".join(chosen) if chosen else None
+
+
+def _suggest_improvements_bg(phone: str, session: UserSession, intent: dict) -> None:
+    """VLM art-director critique of the current image → concrete suggestions."""
+    from tools import groq_ai
+    try:
+        cur = (intent.get("_image_urls") or [None])[0]
+        brand = session.brand_profile() if session.onboarding_complete else {}
+        crit = groq_ai.critique_image(cur, intent.get("description", ""), brand) if cur else {"summary": "", "suggestions": []}
+        sugg = crit.get("suggestions") or []
+        intent["_suggestions"] = sugg
+        intent["_sub_step"] = "awaiting_review"
+        session.agent_intent = intent
+        save_session(session)
+
+        lines = []
+        if crit.get("summary"):
+            lines.append(f"🎨 {crit['summary']}")
+        lines.append("Here's how I'd make it more professional:")
+        for i, s in enumerate(sugg, 1):
+            lines.append(f"*{i}.* {s}")
+        lines.append("\n👉 Reply with a *number* to apply it, *apply all*, tell me your own change, "
+                     "or send a poster you like and I'll match its style.")
+        _send(phone, {"kind": "text", "text": "\n".join(lines)})
+    except Exception as exc:
+        logger.exception("suggest improvements failed: %s", exc)
+        intent["_sub_step"] = "awaiting_review"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text",
+                      "text": "Tell me what feels off and I'll fix it — e.g. *brighter*, *cleaner background*, "
+                              "*bigger text*, *more premium look*."})
+
+
+def _generate_like_reference_bg(phone: str, session: UserSession, intent: dict,
+                                ref_url: str, msg: str) -> None:
+    """Regenerate the post in the STYLE of a user-attached reference image."""
+    from tools import image_gen, groq_ai
+    import requests as _req
+    try:
+        user_id = session.verified_user_id or phone
+        up = aws_storage.upload_from_url(ref_url, user_id=user_id, media_kind="style_ref")
+        ref_s3 = up.get("s3_url") if up.get("ok") else ref_url
+
+        desc = intent.get("description", "")
+        extra = f" Also: {msg}." if msg and len(msg.split()) > 2 else ""
+        prompt = (
+            "Create a professional social-media post in the SAME visual style, layout and design "
+            f"as the reference image — match its composition, color palette, typography feel and overall "
+            f"aesthetic. Topic/content: {desc}.{extra} Keep it clean, premium and Instagram-ready (1:1)."
+        )
+        gen = image_gen.generate_image(prompt, aspect_ratio="1:1", reference_urls=[ref_s3])
+        if not gen.get("ok") or not gen.get("url"):
+            raise RuntimeError(gen.get("error") or "generation failed")
+
+        r = _req.get(gen["url"], timeout=60)
+        up2 = aws_storage.upload_bytes(r.content, content_type="image/jpeg", extension="jpg",
+                                       folder=f"{user_id}/posts")
+        poster_url = up2.get("s3_url") or gen["url"]
+        caption = groq_ai.generate_caption_with_style(
+            desc, "image_post", website_url=session.website_url or "", style_skill=None)
+        intent["_sub_step"] = ""
+        session.agent_intent = intent
+        save_session(session)
+        _finish_generation(phone, session, intent, [poster_url], caption, [])
+    except Exception as exc:
+        logger.exception("generate_like_reference failed: %s", exc)
+        intent["_sub_step"] = "awaiting_review"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text", "text": f"😕 Couldn't match that style ({exc}). Tell me what to change instead."})
 
 
 def _edit_image_bg(phone: str, session: UserSession, intent: dict, instruction: str) -> None:
