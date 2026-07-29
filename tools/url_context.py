@@ -29,6 +29,8 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
+import config
+
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 20
@@ -46,7 +48,9 @@ _HEADERS = {
 }
 
 _SKIP_IMG = re.compile(
-    r"(icon|logo|avatar|sprite|pixel|badge|button|emoji|thumb(?:nail)?|\.gif|1x1|tracking)",
+    r"(icon|logo|avatar|sprite|pixel|badge|button|emoji|thumb(?:nail)?|\.gif|1x1|tracking|"
+    r"banner|header|footer|/tb_|/agents?/|headshot|skyline|watermark|placeholder|social|"
+    r"facebook|instagram|twitter|linkedin|/map/|static-?map|streetview)",
     re.IGNORECASE,
 )
 
@@ -268,6 +272,63 @@ def _scrape_direct_image(url: str, phone: str) -> dict | None:
     }
 
 
+def _scrape_via_jina(url: str, phone: str) -> dict | None:
+    """
+    Fallback for JS-heavy / bot-blocked sites: Jina Reader (r.jina.ai) renders the
+    page server-side and returns clean content + image list — no API key needed.
+    Returns a context dict or None.
+    """
+    try:
+        api = "https://r.jina.ai/" + url
+        headers = {
+            "Accept": "application/json",
+            "X-With-Images-Summary": "true",   # ask Jina to enumerate page images
+            "User-Agent": _HEADERS.get("User-Agent", "Mozilla/5.0"),
+        }
+        # Jina Reader now requires a (free) key; without it the endpoint 403s.
+        _jina_key = getattr(config, "JINA_API_KEY", "")
+        if _jina_key:
+            headers["Authorization"] = f"Bearer {_jina_key}"
+        else:
+            return None  # no key → skip fallback (direct scraper handles most sites)
+        resp = requests.get(api, headers=headers, timeout=45)
+        if not resp.ok:
+            logger.warning("jina reader HTTP %s for %s", resp.status_code, url)
+            return None
+        data = resp.json().get("data", {}) if resp.headers.get("content-type", "").startswith("application/json") else {}
+        title = data.get("title", "") or ""
+        content = data.get("content", "") or ""
+
+        # images: dict {alt: url} and/or embedded markdown ![](url)
+        raw_imgs: list[str] = []
+        imgs = data.get("images") or {}
+        if isinstance(imgs, dict):
+            raw_imgs.extend([v for v in imgs.values() if isinstance(v, str) and v.startswith("http")])
+        raw_imgs.extend(re.findall(r'!\[[^\]]*\]\((https?://[^)\s]+)\)', content))
+        raw_imgs.extend(re.findall(r'https?://[^\s"\'<>)]+?\.(?:jpg|jpeg|png|webp)', content, re.IGNORECASE))
+
+        # de-dupe + drop obvious non-content assets
+        seen, clean = set(), []
+        for u in raw_imgs:
+            if u not in seen and u.startswith("http") and not _SKIP_IMG.search(u):
+                seen.add(u)
+                clean.append(u)
+
+        if not title and not content and not clean:
+            return None
+
+        s3_image_urls = _upload_images(clean, phone)
+        summary = _summarize_text(title, content[:6000], url)
+        logger.info("jina reader: %s → %d imgs, summary len=%d", url, len(s3_image_urls), len(summary))
+        return {
+            "url": url, "title": title, "summary": summary, "raw_text": content,
+            "image_urls": s3_image_urls, "ok": True, "error": None,
+        }
+    except Exception as exc:
+        logger.warning("jina reader failed for %s: %s", url, exc)
+        return None
+
+
 @traceable(run_type="tool", name="scrape_url")
 def scrape_url(url: str, phone: str) -> dict:
     """
@@ -290,6 +351,10 @@ def scrape_url(url: str, phone: str) -> dict:
     try:
         html, final_url = _fetch_html(url)
     except Exception as exc:
+        # Direct fetch failed (403/JS/etc.) → try the Jina Reader fallback
+        jina = _scrape_via_jina(url, phone)
+        if jina:
+            return jina
         return {"url": url, "ok": False, "error": str(exc),
                 "title": "", "summary": "", "raw_text": "", "image_urls": []}
 
@@ -318,8 +383,11 @@ def scrape_url(url: str, phone: str) -> dict:
         or len(raw_text.strip()) < 80
     )
     if is_blocked:
-        logger.warning("url_context: %s appears bot-blocked or empty (text len=%d)",
+        logger.warning("url_context: %s appears bot-blocked or empty (text len=%d) — trying Jina",
                        final_url, len(raw_text.strip()))
+        jina = _scrape_via_jina(url, phone)
+        if jina and (jina["image_urls"] or len(jina["summary"]) > 40):
+            return jina
         return {
             "url": final_url, "ok": False, "error": "blocked",
             "title": title, "summary": "", "raw_text": raw_text, "image_urls": [],
@@ -328,6 +396,13 @@ def scrape_url(url: str, phone: str) -> dict:
     raw_image_urls = _extract_images(soup, final_url, html=html)
     summary = _summarize_text(title, raw_text, final_url)
     s3_image_urls = _upload_images(raw_image_urls, phone)
+
+    # Direct scrape worked but found NO usable images → Jina fallback for the photos
+    if not s3_image_urls:
+        jina = _scrape_via_jina(url, phone)
+        if jina and jina["image_urls"]:
+            jina["summary"] = summary or jina["summary"]
+            return jina
 
     return {
         "url":        final_url,

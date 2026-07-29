@@ -148,6 +148,10 @@ GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 # Groq "compound" models have built-in web search — used to pull real, current
 # industry/market data into content. Falls back gracefully if unavailable.
 GROQ_SEARCH_MODEL = _get("GROQ_SEARCH_MODEL", "groq/compound-mini")
+# Optional Jina Reader key (https://jina.ai/reader) — enables the render-and-extract
+# fallback for JS-heavy / bot-blocked sites. Free key at jina.ai; without it the
+# direct scraper still handles most sites.
+JINA_API_KEY = _get("JINA_API_KEY")
 
 # App
 PORT = _get_int("PORT", 5000)
