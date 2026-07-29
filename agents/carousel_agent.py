@@ -512,8 +512,9 @@ def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:
             db.log_post(phone_number=phone, content_type="carousel",
                         image_urls=image_urls, caption=caption,
                         prompts=prompts, zerini_post_id=post_id, status="published")
+            _where = zerini.fmt_platforms(result.get("platforms") or ["instagram"])
             _send(phone, {"kind": "text",
-                          "text": "✅ *Carousel published!* 🎉\n\nWhat would you like to create next?"
+                          "text": f"✅ *Carousel published to {_where}!* 🎉\n\nWhat would you like to create next?"
                           }, tts=True)
         else:
             sched_dt = None

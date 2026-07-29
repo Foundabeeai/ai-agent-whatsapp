@@ -797,9 +797,10 @@ def _publish_bg(phone: str, session: UserSession, intent: dict) -> None:
                 zerini_post_id=post_id,
                 status="published",
             )
+            _where = zerini.fmt_platforms(result.get("platforms") or ["instagram"])
             _send(phone, {
                 "kind": "text",
-                "text": "✅ *Published!* Your post is live 🎉\n\nReady for the next one? Just say the word!",
+                "text": f"✅ *Published to {_where}!* Your post is live 🎉\n\nReady for the next one? Just say the word!",
             }, tts=True)
         else:
             from dateutil import parser as dp

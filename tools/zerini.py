@@ -149,6 +149,70 @@ def get_instagram_accounts() -> dict:
 # Publishing
 # ---------------------------------------------------------------------------
 
+def get_accounts(profile_id: str | None = None) -> dict:
+    """All ACTIVE connected accounts (every platform) for a profile / workspace."""
+    if not config.ZERINI_API_KEY:
+        return {"ok": False, "error": "ZERINI_API_KEY not configured.", "accounts": []}
+    params: dict[str, str] = {}
+    pid = profile_id or config.ZERINI_PROFILE_ID
+    if pid:
+        params["profileId"] = pid
+    try:
+        resp = requests.get(_url("/v1/accounts"), headers=_headers(), params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.HTTPError as exc:
+        return {"ok": False, "error": f"accounts HTTP {exc.response.status_code}: {exc.response.text[:200]}", "accounts": []}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "accounts": []}
+    raw: list[dict] = data.get("accounts") or (data if isinstance(data, list) else [])
+    active = [a for a in raw if a.get("isActive", True)]
+    return {"ok": True, "accounts": active}
+
+
+_PLATFORM_LABEL = {"instagram": "Instagram", "facebook": "Facebook", "tiktok": "TikTok",
+                   "youtube": "YouTube", "linkedin": "LinkedIn", "twitter": "X", "x": "X",
+                   "threads": "Threads", "pinterest": "Pinterest"}
+
+
+def fmt_platforms(names: list[str]) -> str:
+    """'instagram','facebook','tiktok' → 'Instagram, Facebook & TikTok'."""
+    labels = [_PLATFORM_LABEL.get((n or "").lower(), (n or "").title()) for n in (names or []) if n]
+    labels = list(dict.fromkeys(labels))
+    if not labels:
+        return "your socials"
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels[:-1]) + " & " + labels[-1]
+
+
+def _platform_content_type(platform: str, content_type: str) -> str:
+    """Best-fit per-platform contentType so each network gets the right post kind."""
+    p = (platform or "").lower()
+    if content_type == "reel":  # a video
+        return {"instagram": "reel", "facebook": "reel", "youtube": "short",
+                "tiktok": "video", "threads": "feed", "pinterest": "pin",
+                "linkedin": "feed", "twitter": "feed", "x": "feed"}.get(p, "feed")
+    if content_type == "carousel":
+        return "carousel" if p in ("instagram", "facebook", "tiktok") else "feed"
+    return "feed"
+
+
+def _platforms_from_accounts(accounts: list[dict], content_type: str) -> list[dict]:
+    plats: list[dict] = []
+    for a in accounts:
+        p = str(a.get("platform") or "").lower()
+        aid = str(a.get("_id") or a.get("id") or a.get("accountId") or "")
+        if not p or not aid:
+            continue
+        plats.append({
+            "platform": p,
+            "accountId": aid,
+            "platformSpecificData": {"contentType": _platform_content_type(p, content_type)},
+        })
+    return plats
+
+
 def _build_post_body(
     account_id: str,
     image_urls: list[str],
@@ -158,34 +222,27 @@ def _build_post_body(
     scheduled_at: datetime | None,
     profile_id: str | None = None,
     music: dict | None = None,          # {"name": "...", "artist": "..."}
+    platforms: list[dict] | None = None,
 ) -> dict:
     # Reels need media type "video"; everything else is "image"
     media_item_type = "video" if content_type == "reel" else "image"
     media_items = [{"type": media_item_type, "url": u} for u in image_urls]
 
-    platform_data: dict[str, Any] = {}
-    if content_type == "carousel":
-        platform_data["contentType"] = "carousel"
-    elif content_type == "reel":
-        platform_data["contentType"] = "reel"
-    else:
-        platform_data["contentType"] = "feed"
+    # If an explicit multi-platform list wasn't provided, fall back to Instagram only.
+    if not platforms:
+        platforms = [{
+            "platform": "instagram",
+            "accountId": account_id,
+            "platformSpecificData": {"contentType": _platform_content_type("instagram", content_type)},
+        }]
 
     # NOTE: Instagram's music library cannot be attached via the API (including Zernio).
-    # The `music` param is kept for the caller's use (e.g. to show a suggestion to the user)
-    # but no music fields are sent to Zernio — they have no effect on the published post.
 
     body: dict[str, Any] = {
         "content": caption,
         "publishNow": publish_now,
         "isDraft": False,
-        "platforms": [
-            {
-                "platform": "instagram",
-                "accountId": account_id,
-                "platformSpecificData": platform_data,
-            }
-        ],
+        "platforms": platforms,
         "mediaItems": media_items,
     }
 
@@ -234,6 +291,25 @@ def _post_with_retry(body: dict) -> dict:
     raise last_exc  # unreachable but satisfies type checker
 
 
+def _resolve_platforms(account_id: str, profile_id: str | None, content_type: str,
+                       all_platforms: bool) -> tuple[list[dict], list[str]]:
+    """Build the target platform list. When all_platforms, post to EVERY connected
+    account for the profile; otherwise just the given Instagram account. Returns
+    (platforms, platform_names)."""
+    if all_platforms:
+        acc = get_accounts(profile_id)
+        if acc.get("ok") and acc.get("accounts"):
+            plats = _platforms_from_accounts(acc["accounts"], content_type)
+            if plats:
+                return plats, [p["platform"] for p in plats]
+    # fallback: single instagram account
+    plats = [{
+        "platform": "instagram", "accountId": account_id,
+        "platformSpecificData": {"contentType": _platform_content_type("instagram", content_type)},
+    }]
+    return plats, ["instagram"]
+
+
 def publish_now(
     account_id: str,
     image_urls: list[str],
@@ -241,19 +317,23 @@ def publish_now(
     content_type: str = "image_post",
     profile_id: str | None = None,
     music: dict | None = None,
+    all_platforms: bool = True,
 ) -> dict:
     """
-    Publish a post immediately to Instagram via Zernio.
-    Returns {"ok": True, "post_id": "..."} or {"ok": False, "error": "..."}.
+    Publish a post immediately via Zernio to ALL connected social platforms for the
+    profile (Instagram, Facebook, TikTok, YouTube, LinkedIn, X, etc.) by default.
+    Returns {"ok": True, "post_id": "...", "platforms": [...]} or {"ok": False, "error": "..."}.
     """
     try:
+        platforms, names = _resolve_platforms(account_id, profile_id, content_type, all_platforms)
         body = _build_post_body(
             account_id, image_urls, caption, content_type,
             publish_now=True, scheduled_at=None, profile_id=profile_id, music=music,
+            platforms=platforms,
         )
         data = _post_with_retry(body)
         post_id = str(data.get("_id") or data.get("id") or data.get("postId") or "")
-        return {"ok": True, "post_id": post_id, "data": data}
+        return {"ok": True, "post_id": post_id, "data": data, "platforms": names}
     except requests.exceptions.HTTPError as exc:
         return {"ok": False, "error": f"Publishing HTTP {exc.response.status_code}: {exc.response.text[:300]}"}
     except Exception as exc:
@@ -268,19 +348,23 @@ def schedule_post(
     content_type: str = "image_post",
     profile_id: str | None = None,
     music: dict | None = None,
+    all_platforms: bool = True,
 ) -> dict:
     """
-    Schedule a post for a future date/time via Zernio.
-    Returns {"ok": True, "post_id": "..."} or {"ok": False, "error": "..."}.
+    Schedule a post for a future date/time via Zernio, to ALL connected platforms
+    for the profile by default.
+    Returns {"ok": True, "post_id": "...", "platforms": [...]} or {"ok": False, "error": "..."}.
     """
     try:
+        platforms, names = _resolve_platforms(account_id, profile_id, content_type, all_platforms)
         body = _build_post_body(
             account_id, image_urls, caption, content_type,
             publish_now=False, scheduled_at=scheduled_at, profile_id=profile_id, music=music,
+            platforms=platforms,
         )
         data = _post_with_retry(body)
         post_id = str(data.get("_id") or data.get("id") or data.get("postId") or "")
-        return {"ok": True, "post_id": post_id, "data": data}
+        return {"ok": True, "post_id": post_id, "data": data, "platforms": names}
     except requests.exceptions.HTTPError as exc:
         return {"ok": False, "error": f"Scheduling HTTP {exc.response.status_code}: {exc.response.text[:300]}"}
     except Exception as exc:

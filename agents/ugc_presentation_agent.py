@@ -277,7 +277,8 @@ def _publish_final(phone: str, session: UserSession, intent: dict) -> None:
         session.agent_intent = None
         save_session(session)
         if result.get("ok"):
-            _send(phone, {"kind": "text", "text": "✅ *Posted to Instagram!* 🎉 What's next?"}, tts=True)
+            _where = zerini.fmt_platforms(result.get("platforms") or ["instagram"])
+            _send(phone, {"kind": "text", "text": f"✅ *Posted to {_where}!* 🎉 What's next?"}, tts=True)
         else:
             _send(phone, {"kind": "text", "text": f"😕 Publish failed: {result.get('error')}"})
     except Exception as exc:
