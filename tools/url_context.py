@@ -49,8 +49,8 @@ _HEADERS = {
 
 _SKIP_IMG = re.compile(
     r"(icon|logo|avatar|sprite|pixel|badge|button|emoji|thumb(?:nail)?|\.gif|1x1|tracking|"
-    r"banner|header|footer|/tb_|/agents?/|headshot|skyline|watermark|placeholder|social|"
-    r"facebook|instagram|twitter|linkedin|/map/|static-?map|streetview)",
+    r"banner|header|footer|/tb_|/agents?/|/brokers?/|/mortgage/|headshot|skyline|watermark|"
+    r"placeholder|popup|rebrand|social|facebook|instagram|twitter|linkedin|/map/|static-?map|streetview)",
     re.IGNORECASE,
 )
 
