@@ -233,6 +233,12 @@ def route(
     ct = intent["content_type"]
 
     # Unknown content type — ask the smart question
+    # Content type is KNOWN but details are missing → route to the sub-agent anyway.
+    # Each agent asks its own CLEAR, numbered question (e.g. the reel menu), which is
+    # far better than a vague free-form LLM question that users can't act on.
+    if ct in ("image_post", "carousel", "reel"):
+        return _route_to_agent(phone, session, intent, ct)
+
     if ct == "unknown" or not intent["ready_to_generate"]:
         session.agent_intent = intent
         session.agent_missing_field = ", ".join(intent["missing_fields"])
@@ -279,6 +285,32 @@ def _handle_collecting(
     """User has answered the harness's single clarifying question. Re-extract and route."""
     partial = session.agent_intent or {}
     missing = session.agent_missing_field or ""
+
+    # ── Numbered pick from the feature menu (1-6) → route straight in ──
+    _pick = {
+        "1": ("image_post", None, None),
+        "2": ("image_post", None, "detailed"),
+        "3": ("carousel",   None, None),
+        "4": ("reel", "ugc", None),
+        "5": ("reel", "video_editor", None),
+        "6": ("reel", "ugc_presentation", None),
+    }.get((clean or "").strip())
+    if _pick and "content_type" in missing:
+        ct_pick, rt_pick, style_pick = _pick
+        intent = dict(partial)
+        intent.update({
+            "content_type": ct_pick,
+            "description": intent.get("description", "") or "",
+            "_media_urls": media_urls, "_media_types": media_types,
+            "_voice_confirmed": voice_confirmed,
+        })
+        if rt_pick:
+            intent["reel_type"] = rt_pick
+        if style_pick:
+            intent["_post_style"] = style_pick
+        session.agent_intent = intent
+        save_session(session)
+        return _route_to_agent(phone, session, intent, ct_pick)
 
     # Merge user's answer into partial intent
     has_image = any(t.startswith("image/") for t in media_types)
@@ -362,11 +394,14 @@ def _ask_what_to_create(phone: str, session: UserSession) -> dict:
     return {
         "kind": "text",
         "text": (
-            "🐝 Hey! What would you like to create today?\n\n"
-            "You can say something like:\n"
-            "• _Make a post about our new product launch_ 📸\n"
-            "• _Create a carousel on 5 skincare tips_ 📑\n"
-            "• _Cinematic reel for my coffee brand_ 🎬\n\n"
-            "Or just send a voice note or an image and I'll figure it out!"
+            "🐝 *What would you like to create?*\n\n"
+            "*1* 📸 *Post* — a single image post\n"
+            "*2* 🖼 *Detailed poster* — flyer with price, features, your photo & contact\n"
+            "*3* 📑 *Carousel* — multi-slide post with real researched data\n"
+            "*4* 🎬 *Talking-head reel* — you speaking to camera (AI-generated)\n"
+            "*5* ✂️ *Edit my video* — send your footage → trending cut with captions\n"
+            "*6* 🏠 *Presentation reel* — present a listing/product with photos behind you\n\n"
+            "Reply with a *number*, or just describe it (e.g. _\"post about my new listing\"_).\n"
+            "💡 Paste a *Zillow/listing link* anytime and I'll pull the photos & details."
         ),
     }

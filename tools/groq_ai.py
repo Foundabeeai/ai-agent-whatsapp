@@ -744,7 +744,7 @@ def extract_full_intent(
       "confidence":          0.0-1.0,
       "description":         str — clean subject/topic (no request framing),
       "count":               int — number of images/slides (default 1),
-      "reel_type":           "cinematic" | "ugc" | "ad" | null,
+      "reel_type":           "ugc" | "ugc_presentation" | "video_editor" | null,
       "use_reference_image": bool — user wants attached image as product base,
       "use_style_skill":     bool — user wants to replicate their stored style,
       "publish_action":      "now" | "schedule" | null,
@@ -806,8 +806,9 @@ def extract_full_intent(
         "  2. 'ugc' — ONLY when the user explicitly wants just a talking head with NOTHING shown "
         "(no product/property/photos): e.g. 'just me talking to camera', 'plain talking head', "
         "'a vlog about my day'. If a product/property/service is the subject, prefer ugc_presentation.\n"
-        "  3. 'cinematic' — 'cinematic' / 'product video' / 'product reel' / 'showcase' / 'b-roll'.\n"
-        "  4. 'ad' — 'ad' / 'advertisement' / 'commercial' / 'promo'.\n"
+        "  NOTE: 'cinematic' and 'ad' reel types are RETIRED — never output them. A request for a "
+        "product/showcase/promo/ad video maps to 'ugc_presentation' (or 'ugc' if it's purely the "
+        "person talking).\n"
         "  - Only null if genuinely unclear.\n\n"
 
         "use_reference_image:\n"
@@ -1041,7 +1042,7 @@ Field definitions:
 - instagram_username: their Instagram handle (no @ symbol)
 - publish_action: "now" or "schedule"
 - scheduled_at: when to post as natural language (e.g. "tomorrow at 9am")
-- reel_type: "cinematic" (if user says "cinematic", "product reel", "product video") or "ugc" (if "ugc", "talking head", "my video", "my face", "selfie video")
+- reel_type: "ugc" (talking head / selfie video), "ugc_presentation" (showing a product/property/listing), or "video_editor" (user sends their own footage to edit). Never use "cinematic" or "ad" — they are retired.
 
 Return ONLY valid JSON. Example:
 {"content_type": "image_post", "description": "newly launched mobile game Yo Yo E on Google Play Store"}"""
@@ -1852,14 +1853,14 @@ def generate_30_day_calendar(brand: dict, start_date_str: str) -> list[dict]:
     system = (
         "You are a social media strategist. Generate a 30-day content calendar. "
         "Rules:\n"
-        "- Vary content types: image posts, carousels, reels (cinematic/ugc/ad)\n"
+        "- Vary content types: image posts, carousels, reels (ugc/ugc_presentation)\n"
         "- Monthly targets: 10 image posts, 8 carousels, 12 reels\n"
-        "- Reels: 70% cinematic, 20% ugc, 10% ad\n"
+        "- Reels: 70% ugc, 30% ugc_presentation (cinematic/ad are retired — never use them)\n"
         "- Topics must be specific, actionable, relevant to the brand\n"
         "- caption_idea is a 1-sentence hook\n"
         "Return ONLY a JSON array of 30 objects with keys: "
         "day (1-30), content_type (image_post|carousel|reel), "
-        "reel_type (cinematic|ugc|ad|null), topic (string), caption_idea (string).\n"
+        "reel_type (ugc|ugc_presentation|null), topic (string), caption_idea (string).\n"
         "No markdown, no explanation, just the JSON array."
     )
     user = (
