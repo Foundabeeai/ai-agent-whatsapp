@@ -24,24 +24,37 @@ def _to_replicate_url(url: str) -> str:
     """
     Upload a presigned S3 URL to Replicate's file store and return a clean
     https://replicate.delivery/... URL that SeedDream can fetch reliably.
-    Falls back to the original URL on any error.
+
+    If the S3 URL is dead (expired presign → 403), re-sign it from its key and
+    retry. If the object is truly gone, returns "" so the caller DROPS the dead
+    reference instead of passing a 403 URL to Replicate (which errors the run).
     """
+    candidates = [url]
     try:
-        resp = _requests.get(url, timeout=30)
-        resp.raise_for_status()
-        image_bytes = resp.content
-        content_type = resp.headers.get("Content-Type", "image/jpeg")
-        replicate_file = replicate.files.create(
-            io.BytesIO(image_bytes),
-            filename="ref.jpg",
-            content_type=content_type,
-        )
-        clean_url = str(replicate_file.urls.get("get", url)) if hasattr(replicate_file, "urls") else str(replicate_file)
-        logger.info("_to_replicate_url: uploaded %d bytes → %s", len(image_bytes), clean_url[:80])
-        return clean_url
-    except Exception as exc:
-        logger.warning("_to_replicate_url failed, using original URL: %s", exc)
-        return url
+        from tools.aws_storage import refresh_presigned
+        fresh = refresh_presigned(url)
+        if fresh and fresh != url:
+            candidates.append(fresh)
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        try:
+            resp = _requests.get(candidate, timeout=30)
+            resp.raise_for_status()
+            image_bytes = resp.content
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+            replicate_file = replicate.files.create(
+                io.BytesIO(image_bytes), filename="ref.jpg", content_type=content_type,
+            )
+            clean_url = str(replicate_file.urls.get("get", candidate)) if hasattr(replicate_file, "urls") else str(replicate_file)
+            logger.info("_to_replicate_url: uploaded %d bytes → %s", len(image_bytes), clean_url[:80])
+            return clean_url
+        except Exception as exc:
+            logger.warning("_to_replicate_url: %s failed (%s)", candidate[:80], exc)
+
+    logger.warning("_to_replicate_url: reference unreachable — dropping it")
+    return ""
 
 _ASPECT_RATIOS = {
     "image_post": "1:1",
@@ -136,9 +149,14 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
     }
 
     if reference_urls:
-        # SeedDream expects image_input as an array; re-host presigned URLs via Replicate
+        # SeedDream expects image_input as an array; re-host presigned URLs via Replicate.
+        # Drop any reference we can't fetch (dead/expired S3 URL) so it never errors
+        # the run — we just generate without that reference.
         clean_url = _to_replicate_url(reference_urls[0])
-        input_params["image_input"] = [clean_url]
+        if clean_url:
+            input_params["image_input"] = [clean_url]
+        else:
+            logger.warning("generate_image: reference image unreachable — generating without it")
 
     # --- create prediction with retry ---
     prediction = None
@@ -253,10 +271,13 @@ def generate_image_with_reference(
     }
 
     if image_url:
-        # Re-host presigned S3 URL → clean Replicate URL; pass as array
+        # Re-host presigned S3 URL → clean Replicate URL; drop it if unreachable
         clean_url = _to_replicate_url(image_url)
-        input_params["image_input"] = [clean_url]
-        logger.info("generate_image_with_reference: image_input=%s", clean_url[:80])
+        if clean_url:
+            input_params["image_input"] = [clean_url]
+            logger.info("generate_image_with_reference: image_input=%s", clean_url[:80])
+        else:
+            logger.warning("generate_image_with_reference: reference unreachable — text-only generation")
     else:
         logger.warning("generate_image_with_reference: no image_url — text-only generation")
 

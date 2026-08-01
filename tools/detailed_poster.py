@@ -107,9 +107,11 @@ def generate_detailed_poster(
     for u in (property_image_url, agent_photo_url, logo_url):
         if u:
             try:
-                input_images.append(_to_replicate_url(u))
+                clean = _to_replicate_url(u)
+                if clean:   # skip dead/expired references
+                    input_images.append(clean)
             except Exception:
-                input_images.append(u)
+                pass
 
     prompt = _build_prompt(details, brand,
                            has_property=bool(property_image_url),

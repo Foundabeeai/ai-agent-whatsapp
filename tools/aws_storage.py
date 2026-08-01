@@ -73,6 +73,35 @@ def _presign(s3_key: str) -> str:
     )
 
 
+def key_from_url(url: str) -> str | None:
+    """Extract the S3 object key from one of our own S3 URLs (presigned or not)."""
+    from urllib.parse import urlparse, unquote
+    try:
+        p = urlparse(url)
+        if "amazonaws.com" not in p.netloc and "s3" not in p.netloc:
+            return None
+        key = unquote(p.path.lstrip("/"))
+        # path-style URL (s3.region.amazonaws.com/bucket/key) → strip the bucket
+        if key.startswith(config.AWS_BUCKET_NAME + "/"):
+            key = key[len(config.AWS_BUCKET_NAME) + 1:]
+        return key or None
+    except Exception:
+        return None
+
+
+def refresh_presigned(url: str) -> str | None:
+    """Re-sign one of our S3 URLs from its key → a fresh 7-day URL (fixes expiry).
+    Returns None if the URL isn't one of ours or the object no longer exists."""
+    key = key_from_url(url)
+    if not key:
+        return None
+    try:
+        _s3_client().head_object(Bucket=config.AWS_BUCKET_NAME, Key=key)  # 404/403 if gone
+        return _presign(key)
+    except Exception:
+        return None
+
+
 def _download(url: str, content_type: str | None = None) -> tuple[bytes, str]:
     """
     Download a URL, automatically adding Twilio Basic Auth for Twilio media URLs.
