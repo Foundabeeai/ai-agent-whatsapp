@@ -569,38 +569,58 @@ def _send_carousel_suggestion(phone, session, brand, brand_name, wf, date_str: s
 def _send_reel_suggestion(phone, session, brand, brand_name, reel_type, wf, date_str: str | None = None) -> None:
     from session_store import STEP_DAILY_SUGGESTION
 
-    reel_label = {"cinematic": "cinematic product reel", "ugc": "UGC-style reel",
-                  "ad": "full ad reel"}.get(reel_type or "cinematic", "reel")
-
     day_data   = _get_calendar_day_data(phone, date_str) if date_str else None
     topic      = (day_data or {}).get("topic") or _get_calendar_topic(phone) or ""
-    notes      = (day_data or {}).get("notes") or ""
-    topic_line = f"\n📋 *Today's topic:* _{topic}_" if topic else ""
-    notes_line = f"\n📝 *Notes:* _{notes}_" if notes else ""
-    topic_line = topic_line + notes_line
-
-    # Enriched description (topic + user notes) so the reel generation honours them
-    base_desc = topic or f"reel for {brand.get('brand_name', 'our brand')}"
+    base_desc  = topic or f"reel for {brand.get('brand_name', 'our brand')}"
     reel_description = _build_description_with_notes(phone, date_str, base_desc)
 
+    # Cinematic/Ad are retired → treat as UGC. Video-editor & presentation reels
+    # need user input (their footage / a link) so they can't be fully hands-off.
+    rt = "ugc" if reel_type in (None, "cinematic", "ad", "ugc") else reel_type
+
+    if rt != "ugc":
+        # Fall back to the confirm prompt for reel types we can't auto-produce.
+        session = get_session(phone)
+        session.daily_suggestion = {"content_type": "reel", "image_urls": [], "caption": "",
+                                    "reel_type": rt, "post_id": None, "description": reel_description}
+        session.step = STEP_DAILY_SUGGESTION
+        save_session(session)
+        label = {"video_editor": "video edit", "ugc_presentation": "presentation reel"}.get(rt, "reel")
+        topic_line = f"\n📋 *Today's topic:* _{topic}_" if topic else ""
+        wf._send_async(phone, {"kind": "text",
+                               "text": f"🌅 *Good morning, {brand_name}!*\n\nToday's pick: a *{label}* 🎬"
+                                       f"{topic_line}\n\nReply ✅ *make it* to start, or ⏭ *skip*."})
+        return
+
+    # ── Auto-generate a UGC reel and send it for approval (hands-off) ──
+    from tools import groq_ai, reel_composer
     session = get_session(phone)
-    session.daily_suggestion = {
-        "content_type": "reel",
-        "image_urls": [],
-        "caption": "",
-        "reel_type": reel_type,
-        "post_id": None,
-        "description": reel_description,
-    }
-    session.step = STEP_DAILY_SUGGESTION
+    headshot = (db.get_contact_card(phone) or {}).get("headshot")
+
+    session.content_type = "reel"
+    session.reel_type = "ugc"
+    session.reel_product_description = reel_description
+    try:
+        session.reel_script = groq_ai.generate_ugc_script(reel_description, brand)
+    except Exception:
+        session.reel_script = reel_description
+    session.reel_user_photo_url = headshot   # None → default avatar
+    session.reel_clone_voice = False
+    voice = "female"
+    if headshot:
+        try:
+            g = str(groq_ai.detect_gender_from_image(headshot) or "").lower()
+            voice = "male" if g.startswith("m") else "female"
+        except Exception:
+            pass
+    session.reel_ugc_voice = voice
     save_session(session)
 
+    topic_line = f"\n📋 _{topic}_" if topic else ""
     wf._send_async(phone, {"kind": "text",
-                           "text": f"🌅 *Good morning, {brand_name}!*\n\n"
-                                   f"Today's content pick: a *{reel_label}* 🎬{topic_line}\n\n"
-                                   f"Reply:\n"
-                                   f"✅ *make it* — start the reel now\n"
-                                   f"⏭ *skip* — dismiss for today"})
+                           "text": f"🌅 *Good morning, {brand_name}!*\n\nI'm creating today's reel for you now"
+                                   f"{topic_line}\n\n⏱ I'll send it for your approval in ~3 minutes ☕"})
+    reel_composer.create_ugc_video_bg(session, phone, wf._send_async, save_session)
 
 
 # ---------------------------------------------------------------------------
