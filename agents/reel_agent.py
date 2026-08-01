@@ -56,6 +56,11 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
     voice_ok    = intent.get("_voice_confirmed", False)
     has_image   = bool(media_urls and any(t.startswith("image/") for t in media_types))
 
+    # Cinematic and Ad reel types are retired — route those requests to UGC.
+    if reel_type in ("cinematic", "ad"):
+        reel_type = "ugc"
+        intent["reel_type"] = "ugc"
+
     # UGC Presentation Video is its own multi-stage sub-agent
     if reel_type == "ugc_presentation":
         from agents import ugc_presentation_agent
@@ -75,10 +80,10 @@ def start(phone: str, session: UserSession, intent: dict) -> dict:
             "kind": "text",
             "text": (
                 "🎬 What kind of reel?\n\n"
-                "1️⃣ *Cinematic* — product video, premium/editorial look\n"
-                "2️⃣ *UGC* — talking-head, authentic creator style\n"
-                "3️⃣ *Ad* — scripted advertisement with avatar\n\n"
-                "Reply *1*, *2*, or *3* — or just say the style you want!"
+                "1️⃣ *Talking-head (UGC)* — you talking to camera, authentic creator style\n"
+                "2️⃣ *Edit my video* — send your own footage, I'll turn it into a trending cut\n"
+                "3️⃣ *Presentation* — present a product/property with photos behind you\n\n"
+                "Reply *1*, *2*, or *3* — or just describe what you want!"
             ),
         }
 
@@ -234,17 +239,14 @@ def handle_step(
         if not reel_type:
             return {
                 "kind": "text",
-                "text": "Reply *1* for Cinematic, *2* for UGC, *3* for Ad reel — or just say the style!",
+                "text": "Reply *1* (talking-head), *2* (edit my video) or *3* (presentation) — or just describe it!",
             }
         intent["reel_type"] = reel_type
         intent["_sub_step"] = ""
-        description = intent.get("description", "")
-        has_image   = bool(media_urls and any(t.startswith("image/") for t in media_types))
         session.agent_intent = intent
-        return _start_reel_type(
-            phone, session, intent, reel_type, description,
-            has_image, media_urls, media_types, voice_confirmed,
-        )
+        save_session(session)
+        # video_editor & ugc_presentation are routed inside start(); ugc uses the legacy flow
+        return start(phone, session, intent)
 
     # Once reel type is selected, session.step moves to STEP_REEL_* and workflow.py handles it.
     # This shouldn't be called with an unknown sub_step — restart.
@@ -321,17 +323,18 @@ def _upload_and_advance_ad(
 # ── Utility ───────────────────────────────────────────────────────────────
 
 def _parse_reel_type(choice: str) -> Optional[str]:
-    if choice in {"1", "cinematic", "product", "product reel", "product video"}:
-        return "cinematic"
-    if choice in {"2", "ugc", "talking head", "talking-head", "creator", "selfie"}:
+    c = (choice or "").lower().strip()
+    if c in {"1", "ugc", "talking head", "talking-head", "talking", "creator", "selfie", "face"}:
         return "ugc"
-    if choice in {"3", "ad", "advertisement", "scripted"}:
-        return "ad"
+    if c in {"2", "edit", "edit my video", "edit video", "video editor", "my footage", "my video"}:
+        return "video_editor"
+    if c in {"3", "presentation", "present", "property", "showcase", "product"}:
+        return "ugc_presentation"
     # Fuzzy
-    if "cinematic" in choice or "product" in choice:
-        return "cinematic"
-    if "ugc" in choice or "talking" in choice or "face" in choice:
+    if "edit" in c or "my video" in c or "my footage" in c or "own video" in c:
+        return "video_editor"
+    if "present" in c or "showcase" in c or "property" in c or "listing" in c:
+        return "ugc_presentation"
+    if "talking" in c or "ugc" in c or "face" in c or "selfie" in c or "creator" in c:
         return "ugc"
-    if "ad" in choice or "advert" in choice:
-        return "ad"
     return None
