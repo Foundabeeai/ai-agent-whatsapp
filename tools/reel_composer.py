@@ -400,15 +400,15 @@ def create_ugc_video_bg(
             f"9:16 portrait orientation, photorealistic, editorial photography quality."
         )
 
-        img_result = image_gen.generate_image_with_reference(
+        img_result = image_gen.generate_with_gpt_image(
             prompt=portrait_prompt,
-            image_url=portrait_ref,
+            reference_urls=[portrait_ref] if portrait_ref else None,
             aspect_ratio="2:3",
         )
         if not img_result.get("ok"):
             raise RuntimeError(f"Portrait image failed: {img_result.get('error')}")
 
-        # Crop SeedDream 2:3 output to 9:16 and upload once to S3
+        # Crop 2:3 output to 9:16 and upload once to S3
         portrait_s3_url = _fetch_crop_upload(
             img_result["url"],
             f"{user_id}/reel_ugc_portrait",

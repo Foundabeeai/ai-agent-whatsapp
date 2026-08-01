@@ -2399,16 +2399,52 @@ def handle_incoming_message(
     # STEP: reel_ugc_script_review  (UGC reel — confirm/edit script)
     # ------------------------------------------------------------------
     if session.step == STEP_REEL_UGC_SCRIPT_REVIEW:
-        approve_words = {"approve", "yes", "good", "perfect", "looks good", "use it", "ok", "okay"}
-        is_approved = choice in approve_words or any(w in choice for w in approve_words)
+        approve_words = {"approve", "yes", "good", "perfect", "looks good", "use it", "ok", "okay", "great", "love it"}
+        regen_words   = {"regenerate", "redo", "regen", "rewrite", "again", "try again", "retry",
+                         "different", "another", "new one", "new", "no", "not good", "change it"}
+        cmd    = clean.strip().lower()
+        tokens = clean.split()
+        is_command = len(tokens) <= 4
 
-        if not is_approved and len(clean) >= 3:
-            # User typed their own script — accept any length
-            words = clean.split()
-            if len(words) > 32:
-                _send_async(phone, {"kind": "text",
-                                    "text": f"⚠️ Your script is {len(words)} words — that might make the video too long. Shorter is better for Reels, but we'll use it as-is!"})
-            session.reel_script = clean
+        # 🔄 Command: rewrite the script (don't mistake the command for the script!)
+        if cmd in regen_words or (is_command and any(cmd == w or cmd.startswith(w) for w in
+                ("regenerate", "redo", "regen", "rewrite", "again", "retry", "different", "another"))):
+            brand = session.brand_profile() if session.onboarding_complete else {}
+            _send_async(phone, {"kind": "text", "text": "🔄 Rewriting your script..."})
+            script = groq_ai.generate_ugc_script(session.reel_product_description or clean, brand)
+            session.reel_script = script
+            save_session(session)   # stay in review
+            wc = len(script.split())
+            return {"kind": "text",
+                    "text": (f"📝 *New script* ({wc} words):\n\n{script}\n\n"
+                             "Reply *approve* to use it, *regenerate* for another, or paste your own (32+ words):")}
+
+        is_approved = cmd in approve_words or (is_command and any(cmd == w for w in approve_words))
+
+        if not is_approved:
+            if len(clean) >= 20 and len(tokens) >= 4:
+                # Long enough to be a real custom script
+                if len(tokens) > 32:
+                    _send_async(phone, {"kind": "text",
+                                        "text": f"⚠️ Your script is {len(tokens)} words — a bit long for a Reel, but we'll use it as-is!"})
+                session.reel_script = clean
+            else:
+                # Short, ambiguous message that isn't a clear command → clarify
+                return {"kind": "text",
+                        "text": ("Not sure what you mean 🐝 — reply *approve* to use this script, "
+                                 "*regenerate* for a new one, or paste your own (32+ words).")}
+
+        # Reuse a previously saved headshot automatically — no need to ask again.
+        _saved = (db.get_contact_card(phone) or {}).get("headshot")
+        if _saved:
+            session.reel_user_photo_url = _saved
+            session.step = STEP_REEL_VOICE_SELECT
+            save_session(session)
+            return {"kind": "text",
+                    "text": ("📸 Using your saved photo.\n\n🎙️ Choose a voice for your video:\n\n"
+                             "👩 Reply *female* for a female voice\n"
+                             "👨 Reply *male* for a male voice\n\n"
+                             "_(or reply *new photo* to upload a different one)_")}
 
         session.step = STEP_REEL_USER_PHOTO
         save_session(session)
@@ -2429,13 +2465,20 @@ def handle_incoming_message(
         skip_words = {"skip", "default", "avatar", "no", "none"}
 
         if has_media:
+            # Store the headshot in the PERMANENT assets bucket + remember it for
+            # this phone, so future videos can reuse it without asking again.
             upload = aws_storage.upload_from_url(
                 media_urls[0],
                 user_id=session.verified_user_id or phone,
-                media_kind="reel_user_photo",
+                media_kind="headshot",
+                bucket=config.AWS_ASSETS_BUCKET,
             )
             if upload.get("ok"):
                 session.reel_user_photo_url = upload.get("permanent_url") or upload["s3_url"]
+                try:
+                    db.save_contact_card(phone, {"headshot": session.reel_user_photo_url})
+                except Exception:
+                    pass
                 save_session(session)
             else:
                 # Upload failed — continue without photo (use default avatar)
@@ -2462,6 +2505,10 @@ def handle_incoming_message(
     # STEP: reel_voice_select  (UGC reel — pick male or female TTS voice)
     # ------------------------------------------------------------------
     if session.step == STEP_REEL_VOICE_SELECT:
+        if any(w in choice for w in ("new photo", "different photo", "change photo", "another photo", "upload photo")):
+            session.step = STEP_REEL_USER_PHOTO
+            save_session(session)
+            return {"kind": "text", "text": "📸 Sure — send your new photo, or type *skip* for a default avatar."}
         if "female" in choice or "woman" in choice or "girl" in choice:
             session.reel_ugc_voice = "female"
         elif "male" in choice or "man" in choice or "boy" in choice:
@@ -2733,13 +2780,20 @@ def handle_incoming_message(
         skip_words = {"skip", "default", "avatar", "no", "none"}
 
         if has_media:
+            # Store the headshot in the PERMANENT assets bucket + remember it for
+            # this phone, so future videos can reuse it without asking again.
             upload = aws_storage.upload_from_url(
                 media_urls[0],
                 user_id=session.verified_user_id or phone,
-                media_kind="reel_user_photo",
+                media_kind="headshot",
+                bucket=config.AWS_ASSETS_BUCKET,
             )
             if upload.get("ok"):
                 session.reel_user_photo_url = upload.get("permanent_url") or upload["s3_url"]
+                try:
+                    db.save_contact_card(phone, {"headshot": session.reel_user_photo_url})
+                except Exception:
+                    pass
                 save_session(session)
             else:
                 logger.warning("reel_ad_user_photo upload failed: %s — using default avatar", upload.get("error"))

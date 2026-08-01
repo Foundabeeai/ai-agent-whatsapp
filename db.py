@@ -752,7 +752,7 @@ def get_contact_card(phone_number: str) -> dict | None:
         doc = db.contact_cards.find_one({"phone_number": phone_number})
         if not doc:
             return None
-        return {k: doc.get(k, "") for k in ("name", "role", "email", "mobile", "website", "company")}
+        return {k: doc.get(k, "") for k in ("name", "role", "email", "mobile", "website", "company", "headshot")}
     except Exception:
         return None
 

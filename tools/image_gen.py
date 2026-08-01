@@ -245,6 +245,68 @@ def generate_image(prompt: str, aspect_ratio: str = "1:1", reference_urls: list[
 
 
 _SEEDREAM_MODEL = "bytedance/seedream-4.5"
+_GPT_IMAGE_MODEL = "openai/gpt-image-2"
+
+
+@traceable(run_type="tool", name="generate_with_gpt_image")
+@_gated("image_ref")
+def generate_with_gpt_image(
+    prompt: str,
+    reference_urls: list[str] | None = None,
+    aspect_ratio: str = "2:3",
+    quality: str = "high",
+) -> dict:
+    """
+    Reference-based image generation with openai/gpt-image-2 (same model as the
+    detailed posters). Preserves the referenced person/subject better and renders
+    cleaner scenes. Returns {"ok": True, "url": "..."} or {"ok": False, "error": ...}.
+    """
+    if not config.REPLICATE_API_TOKEN:
+        return {"ok": False, "error": "REPLICATE_API_TOKEN not set"}
+    ar = aspect_ratio if aspect_ratio in ("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16") else "2:3"
+    inp: dict = {"prompt": prompt, "aspect_ratio": ar, "quality": quality,
+                 "output_format": "png", "number_of_images": 1}
+    imgs: list[str] = []
+    for u in (reference_urls or []):
+        if u:
+            c = _to_replicate_url(u)
+            if c:
+                imgs.append(c)
+    if imgs:
+        inp["input_images"] = imgs
+    try:
+        prediction = replicate.predictions.create(model=_GPT_IMAGE_MODEL, input=inp)
+    except Exception as exc:
+        logger.error("gpt-image-2 create failed: %s", exc)
+        return {"ok": False, "error": f"Could not start gpt-image: {exc}"}
+
+    elapsed = 0
+    while elapsed < _MAX_WAIT:
+        try:
+            prediction.reload()
+        except Exception:
+            time.sleep(_POLL_INTERVAL); elapsed += _POLL_INTERVAL; continue
+        if prediction.status == "succeeded":
+            out = prediction.output
+            url = None
+            if isinstance(out, list) and out:
+                raw = out[0]
+                url = raw.url if hasattr(raw, "url") else str(raw)
+            elif isinstance(out, str):
+                url = out
+            elif hasattr(out, "url"):
+                url = out.url
+            return {"ok": True, "url": url} if url else {"ok": False, "error": f"unexpected output: {out!r}"}
+        if prediction.status in ("failed", "canceled"):
+            return {"ok": False, "error": prediction.error or prediction.status}
+        time.sleep(_POLL_INTERVAL); elapsed += _POLL_INTERVAL
+
+    try:
+        prediction.cancel()
+    except Exception:
+        pass
+    return {"ok": False, "error": f"gpt-image timed out after {_MAX_WAIT}s"}
+
 
 @traceable(run_type="tool", name="generate_image_with_reference")
 @_gated("image_ref")
