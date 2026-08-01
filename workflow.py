@@ -2085,6 +2085,7 @@ def handle_incoming_message(
                         url,
                         user_id=session.verified_user_id or phone,
                         media_kind="brand_asset",
+                        bucket=config.AWS_ASSETS_BUCKET,   # permanent — never auto-expires
                     )
                     if upload.get("ok") and upload.get("s3_url"):
                         s3_url = upload["s3_url"]

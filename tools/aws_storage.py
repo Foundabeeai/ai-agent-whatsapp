@@ -63,41 +63,50 @@ def _ext_from_url(url: str, content_type: str | None = None) -> str:
     return ".jpg"
 
 
-def _presign(s3_key: str) -> str:
+def _presign(s3_key: str, bucket: str | None = None) -> str:
     """Generate a presigned GET URL valid for 7 days."""
     s3 = _s3_client()
     return s3.generate_presigned_url(
         "get_object",
-        Params={"Bucket": config.AWS_BUCKET_NAME, "Key": s3_key},
+        Params={"Bucket": bucket or config.AWS_BUCKET_NAME, "Key": s3_key},
         ExpiresIn=_PRESIGNED_EXPIRY,
     )
 
 
-def key_from_url(url: str) -> str | None:
-    """Extract the S3 object key from one of our own S3 URLs (presigned or not)."""
+def bucket_and_key_from_url(url: str) -> tuple[str, str] | None:
+    """Extract (bucket, key) from one of our own S3 URLs (virtual- or path-style)."""
     from urllib.parse import urlparse, unquote
     try:
         p = urlparse(url)
-        if "amazonaws.com" not in p.netloc and "s3" not in p.netloc:
+        host, path = p.netloc, unquote(p.path.lstrip("/"))
+        if "amazonaws.com" not in host and "s3" not in host:
             return None
-        key = unquote(p.path.lstrip("/"))
-        # path-style URL (s3.region.amazonaws.com/bucket/key) → strip the bucket
-        if key.startswith(config.AWS_BUCKET_NAME + "/"):
-            key = key[len(config.AWS_BUCKET_NAME) + 1:]
-        return key or None
+        if ".s3" in host:                      # virtual-hosted: {bucket}.s3[.region].amazonaws.com/{key}
+            return host.split(".s3", 1)[0], path
+        # path-style: s3[.region].amazonaws.com/{bucket}/{key}
+        if "/" in path:
+            b, k = path.split("/", 1)
+            return b, k
+        return None
     except Exception:
         return None
+
+
+def key_from_url(url: str) -> str | None:
+    bk = bucket_and_key_from_url(url)
+    return bk[1] if bk else None
 
 
 def refresh_presigned(url: str) -> str | None:
     """Re-sign one of our S3 URLs from its key → a fresh 7-day URL (fixes expiry).
     Returns None if the URL isn't one of ours or the object no longer exists."""
-    key = key_from_url(url)
-    if not key:
+    bk = bucket_and_key_from_url(url)
+    if not bk:
         return None
+    bucket, key = bk
     try:
-        _s3_client().head_object(Bucket=config.AWS_BUCKET_NAME, Key=key)  # 404/403 if gone
-        return _presign(key)
+        _s3_client().head_object(Bucket=bucket, Key=key)  # 404/403 if gone
+        return _presign(key, bucket=bucket)
     except Exception:
         return None
 
@@ -123,13 +132,12 @@ def upload_from_url(
     media_kind: str = "post",
     content_type: str | None = None,
     public: bool = False,  # kept for API compat; ACL is never set (bucket disallows it)
+    bucket: str | None = None,
 ) -> dict:
     """
     Download a remote URL (including authenticated Twilio media URLs) and re-upload to S3.
     Returns a 7-day presigned URL in s3_url (usable by AI models and Twilio).
-    Returns:
-      {"ok": True, "s3_url": "<7-day presigned>", "s3_key": "...", "permanent_url": "<presigned>"}
-      {"ok": False, "error": "..."}
+    Pass bucket=config.AWS_ASSETS_BUCKET for assets that must never auto-expire.
     """
     try:
         data, detected_ct = _download(source_url, content_type)
@@ -137,17 +145,16 @@ def upload_from_url(
     except Exception as exc:
         return {"ok": False, "error": f"Download failed: {exc}"}
 
+    target = bucket or config.AWS_BUCKET_NAME
     filename = f"{uuid.uuid4().hex}{ext}"
     s3_key = f"{config.AWS_BASE_DIR}/{user_id}/{media_kind}/{filename}"
     try:
         s3 = _s3_client()
         s3.upload_fileobj(
-            BytesIO(data),
-            config.AWS_BUCKET_NAME,
-            s3_key,
+            BytesIO(data), target, s3_key,
             ExtraArgs={"ContentType": detected_ct.split(";")[0].strip()},
         )
-        presigned = _presign(s3_key)
+        presigned = _presign(s3_key, bucket=target)
         return {"ok": True, "s3_url": presigned, "s3_key": s3_key, "permanent_url": presigned}
     except Exception as exc:
         return {"ok": False, "error": f"S3 upload failed: {exc}"}
@@ -159,23 +166,20 @@ def upload_bytes(
     extension: str = "mp3",
     folder: str = "voice",
     public: bool = False,  # kept for API compat; ACL is never set (bucket disallows it)
+    bucket: str | None = None,
 ) -> dict:
     """
     Upload raw bytes to S3 under a generated key.
     Returns a 7-day presigned URL (usable by AI models and Twilio).
-    Returns {"ok": True, "s3_url": "<7-day presigned>", "s3_key": "...", "permanent_url": "<presigned>"}
+    Pass bucket=config.AWS_ASSETS_BUCKET for assets that must never auto-expire.
     """
+    target = bucket or config.AWS_BUCKET_NAME
     filename = f"{uuid.uuid4().hex}.{extension}"
     s3_key = f"{config.AWS_BASE_DIR}/{folder}/{filename}"
     try:
         s3 = _s3_client()
-        s3.upload_fileobj(
-            BytesIO(data),
-            config.AWS_BUCKET_NAME,
-            s3_key,
-            ExtraArgs={"ContentType": content_type},
-        )
-        presigned = _presign(s3_key)
+        s3.upload_fileobj(BytesIO(data), target, s3_key, ExtraArgs={"ContentType": content_type})
+        presigned = _presign(s3_key, bucket=target)
         return {"ok": True, "s3_url": presigned, "s3_key": s3_key, "permanent_url": presigned}
     except Exception as exc:
         return {"ok": False, "error": f"S3 upload failed: {exc}"}

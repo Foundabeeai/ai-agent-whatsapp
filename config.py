@@ -64,6 +64,10 @@ AWS_ACCESS_KEY_ID = _get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = _get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = _get("AWS_REGION", "ca-central-1")
 AWS_BUCKET_NAME = _get("AWS_BUCKET_NAME", "foundabee-temp")
+# Permanent bucket for assets that must never expire/auto-delete (brand logos,
+# avatars). Defaults to the main bucket; set AWS_ASSETS_BUCKET to a bucket with
+# NO lifecycle-expiry rule so brand assets persist and can always be re-signed.
+AWS_ASSETS_BUCKET = _get("AWS_ASSETS_BUCKET", "") or _get("AWS_BUCKET_NAME", "foundabee-temp")
 AWS_BASE_DIR = _get("AWS_BASE_DIR", "foundabee_whatsapp_posts")
 
 # MongoDB
