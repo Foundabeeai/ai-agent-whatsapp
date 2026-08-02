@@ -1673,7 +1673,11 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
       }
     """
     import json as _json, re as _re
-    target_segments = max(3, min(8, int(duration_sec // 4) or 3))
+    # Beat-level cut density (arcads-omniflash grammar): a style change every
+    # ~1.6s, NOT one look every 4s. Dense cuts are what make the edit read as
+    # professionally restyled rather than a slideshow.
+    _BEAT_SECS = 1.8
+    target_segments = max(3, min(16, int(round(duration_sec / _BEAT_SECS)) or 3))
     system = (
         "You are a viral short-form video editor (Instagram Reels / TikTok) in the high-retention "
         "'Hormozi' style. Given a transcript of someone talking to camera, produce an EDIT PLAN. "
@@ -1681,9 +1685,19 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         "graphic overlays. YOU decide the overlays per beat so every video feels uniquely edited — "
         "do NOT apply the same treatment to every segment; vary them to match the meaning and energy.\n"
         "Rules:\n"
-        f"- Break the video into about {target_segments} contiguous, non-overlapping segments "
-        f"covering 0..{duration_sec:.1f}s.\n"
-        "- Each segment needs:\n"
+        f"- Break the video into about {target_segments} contiguous, non-overlapping BEATS "
+        f"covering 0..{duration_sec:.1f}s. Beats are SHORT (1.2-2.5s) — a style change roughly every "
+        "1.8s. Dense cuts are the point; do NOT average them into long 4s segments.\n"
+        "- Beat boundaries fall at clause boundaries, never mid-word.\n"
+        "- Each beat needs an ARCHETYPE — the dominant look for that beat. Rotate them; NEVER use the "
+        "same archetype twice in a row:\n"
+        "    'bg_swap'    — flat bold color wall + giant kinetic type behind the person\n"
+        "    'grid'       — teal cutting-mat grid background with hand-drawn doodles\n"
+        "    'cardboard'  — kraft/cardboard texture, sticker-cutout presenter\n"
+        "    'split'      — two-tone color-block background\n"
+        "    'rec_ui'     — retro camcorder/media-player UI frame (REC dot, battery, playback bar)\n"
+        "    'broll'      — AI B-roll footage behind the person\n"
+        "- Each beat needs:\n"
         "  • broll_prompt: cinematic stop-motion B-roll relevant to what's said (no text/logos)\n"
         "  • caption: SHORT (max 6 words), matching what they say in that beat\n"
         "  • zoom: 'in' (build tension), 'out' (reveal/breathe), 'punch' (hard emphasis), or 'none'\n"
@@ -1693,8 +1707,9 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         "delight), 'action_lines' (high-energy hype), 'check' (yes/correct/do this), 'cross' (no/myth/don't), "
         "or 'none' (let a calm beat breathe). VARY these across the video — never repeat the same one back "
         "to back, and leave some beats with 'none'.\n"
-        "  • big_text: 1-2 word ALL-CAPS phrase to slam BEHIND the subject for a punchy keyword, else \"\" "
-        "(only the 1-3 biggest beats).\n"
+        "  • big_text: the ALL-CAPS words to SLAM BEHIND the person (2-5 words actually spoken in that "
+        "beat). REQUIRED on every 'bg_swap' and 'split' beat — that giant kinetic type IS the look. "
+        "Use \"\" on grid/rec_ui/broll beats, where doodles or the footage carry the frame.\n"
         "  • transition: how this cut ENTERS — 'flash' (default), 'whip' (fast energetic swipe), 'glitch' "
         "(digital/tech beat), 'shake' (impact/hard hit), or 'none'. Match it to the energy of the beat.\n"
         "  • lens: true only for a rare intense 'through-the-scope' moment, else false\n"
@@ -1703,29 +1718,28 @@ def generate_video_edit_plan(transcript: str, duration_sec: float, brand: dict) 
         "clean, stat beats get an infographic, the payoff beat gets a punch zoom + shake. Keep it authentic "
         "— never invent numbers or facts not in the transcript.\n"
         "\nDIRECTOR DISCIPLINE (this is what makes it look elite, not amateur):\n"
-        "- ONE hero element per beat MAX. Never combine a doodle AND big_text on the same segment — pick the "
-        "single strongest one; leave the rest empty.\n"
-        "- LESS IS MORE: at least half the segments should have doodle='none' and no emoji — clean beats let "
-        "the captions and presenter breathe. Overusing overlays is the #1 amateur mistake.\n"
-        "- Emoji: use RARELY (at most 1-2 in the whole video), only when it truly amplifies a punchline. "
-        "It renders small in a corner — never rely on it as the main graphic.\n"
-        "- 'circle', 'brackets' and 'lens' FRAME THE PERSON'S FACE — only use them to spotlight the speaker "
-        "on an intense/personal line, not on B-roll-heavy beats.\n"
-        "- big_text is a rare power move (1-3 times per video), for the single biggest keyword only.\n"
+        "- ONE dominant transformation per beat: the archetype IS the beat's look. Give it EITHER giant "
+        "big_text (bg_swap/split) OR a doodle (grid/cardboard) — never both on the same beat.\n"
+        "- Rotate archetypes so no two consecutive beats look alike. That rotation, at ~1.8s cadence, is "
+        "what makes it read as a professionally restyled edit.\n"
+        "- Emoji: use RARELY (at most 1-2 in the whole video), only when it truly amplifies a punchline.\n"
+        "- 'circle', 'brackets' and 'lens' FRAME THE PERSON'S FACE — only to spotlight the speaker on an "
+        "intense/personal line, not on B-roll-heavy beats.\n"
         "- Vary transitions with the energy; most cuts should be 'flash' or 'whip', save 'glitch'/'shake' "
         "for genuine impact moments.\n"
-        "- The captions are always on — treat overlays as seasoning, not the meal.\n"
+        "- On-screen text is the words SPOKEN in that beat, spelled correctly (proper nouns and brand "
+        "names exactly as in the transcript context) — never invent copy.\n"
         "- Output ONLY valid JSON. No markdown."
     )
     user = (
         f"Brand: {brand.get('brand_name') or ''} | Voice: {brand.get('brand_voice') or 'energetic'}\n"
         f"Video duration: {duration_sec:.1f}s\n"
         f"Transcript:\n{transcript}\n\n"
-        'Return JSON: {"title":"...","story":"...","segments":[{"start":0,"end":4,'
-        '"broll_prompt":"...","caption":"...","zoom":"in","doodle":"circle","big_text":"",'
-        '"transition":"flash","lens":false,"peak":false}],"cta":"..."}'
+        'Return JSON: {"title":"...","story":"...","segments":[{"start":0,"end":1.8,'
+        '"archetype":"bg_swap","broll_prompt":"...","caption":"...","zoom":"in","doodle":"none",'
+        '"big_text":"EDITING IS EASY","transition":"flash","lens":false,"peak":false}],"cta":"..."}'
     )
-    raw = _chat(system, user, temperature=0.7, max_tokens=2200)
+    raw = _chat(system, user, temperature=0.7, max_tokens=4000)
     try:
         clean = _re.sub(r"```[a-z]*\n?", "", raw).strip().strip("`")
         data = _json.loads(clean)

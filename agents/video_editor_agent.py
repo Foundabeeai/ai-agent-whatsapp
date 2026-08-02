@@ -345,6 +345,43 @@ _INFO_TYPES = ("none", "counter", "progress", "ring", "stat", "callout")
 _DOODLE_FALLBACK = ("none", "circle", "none", "action_lines", "none", "underline", "none", "stars")
 _TRANS_FALLBACK = ("flash", "whip", "flash", "glitch", "flash", "whip")
 
+# ── Archetypes (arcads-omniflash editing grammar) ──────────────────────────
+# Each beat gets ONE dominant look; rotate so no two consecutive beats match.
+_ARCHETYPES = ("bg_swap", "grid", "cardboard", "split", "rec_ui", "broll")
+_ARCH_ROTATION = ("bg_swap", "grid", "broll", "split", "cardboard", "rec_ui")
+
+
+def _apply_archetype(scene: dict, arch: str, i: int, broll_url: str, solid_i: int) -> int:
+    """Map an archetype onto a scene dict (mutates it). Returns the next solid_i."""
+    scene["recUi"] = False
+    if arch == "broll" and broll_url:
+        scene["bg"] = "broll"
+        scene["brollSrc"] = broll_url
+        return solid_i
+    if arch == "rec_ui":
+        # retro UI frame over footage when we have it, else a solid wall
+        if broll_url:
+            scene["bg"] = "broll"; scene["brollSrc"] = broll_url
+        else:
+            scene["bg"] = "solid"; scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
+            solid_i += 1
+        scene["recUi"] = True
+        return solid_i
+    if arch == "grid":
+        scene["bg"] = "grid"
+        return solid_i
+    if arch == "cardboard":
+        scene["bg"] = "cardboard"
+        scene["presenter"] = "sticker"
+        return solid_i
+    if arch == "split":
+        scene["bg"] = "split"; scene["color"] = "#EDE6D6"; scene["color2"] = "#E7B10A"
+        return solid_i
+    # bg_swap (default): flat bold colour wall for giant kinetic type
+    scene["bg"] = "solid"
+    scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
+    return solid_i + 1
+
 
 def _fallback_words(segments: list[dict]) -> list[dict]:
     """Build evenly-spaced word timings from segment captions when Whisper gave none."""
@@ -404,6 +441,7 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
     """
     scenes: list[dict] = []
     solid_i = 0
+    prev_arch = ""
     for i, seg in enumerate(segments):
         cap = (seg.get("caption") or "").strip()
         broll = broll_urls[i] if i < len(broll_urls) else ""
@@ -457,21 +495,29 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
             "bigText": big_llm,   # over video: only what the LLM explicitly asked for
             "color": "", "color2": "",
         }
-        if broll:
-            scene["bg"] = "broll"
-            scene["brollSrc"] = broll
-        else:
-            bg = _SCENE_CYCLE[i % len(_SCENE_CYCLE)]
-            scene["bg"] = bg
-            if bg == "solid":
-                scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
-                solid_i += 1
-            elif bg == "split":
-                scene["color"] = "#EDE6D6"
-                scene["color2"] = "#E7B10A"
-            # designed bgs look great with a big keyword; use LLM's or a fallback
-            if bg in ("solid", "split"):
-                scene["bigText"] = big_llm or big_fallback
+        # ── Archetype: the beat's dominant look (LLM-chosen, rotated fallback) ──
+        arch = str(seg.get("archetype", "")).lower().strip()
+        if arch not in _ARCHETYPES:
+            arch = _ARCH_ROTATION[i % len(_ARCH_ROTATION)]
+        # never repeat the same archetype back-to-back
+        if prev_arch and arch == prev_arch:
+            for alt in _ARCH_ROTATION:
+                if alt != prev_arch and not (alt == "broll" and not broll):
+                    arch = alt
+                    break
+        if arch == "broll" and not broll:
+            arch = "bg_swap"
+        prev_arch = arch
+
+        solid_i = _apply_archetype(scene, arch, i, broll, solid_i)
+
+        # Giant kinetic type IS the look on flat-colour beats — guarantee it
+        if scene.get("bg") in ("solid", "split") and not scene.get("bigText"):
+            scene["bigText"] = big_fallback
+        # ...and keep type off busy footage beats where doodles carry the frame
+        if scene.get("bg") == "broll" and scene.get("bigText") and scene.get("doodle") != "none":
+            scene["doodle"] = "none"
+
         scenes.append(scene)
     return scenes
 

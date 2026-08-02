@@ -66,6 +66,53 @@ export const BrollBG: React.FC<{src: string; zoom?: string; durationInFrames: nu
   );
 };
 
+// ── Retro camcorder / media-player UI frame (drawn OVER the scene) ──────────
+export const RecUIFrame: React.FC = () => {
+  const frame = useCurrentFrame();
+  const {width, height, fps} = useVideoConfig();
+  const blink = Math.floor(frame / (fps / 2)) % 2 === 0;
+  const secs = Math.floor(frame / fps);
+  const tc = `00:${String(secs).padStart(2, '0')}:${String(frame % fps).padStart(2, '0')}`;
+  const m = 46;
+  const corner = (x: number, y: number, sx: number, sy: number) => (
+    <g transform={`translate(${x} ${y}) scale(${sx} ${sy})`}>
+      <path d="M0,64 L0,0 L64,0" fill="none" stroke="#fff" strokeWidth={7} opacity={0.92} />
+    </g>
+  );
+  return (
+    <AbsoluteFill style={{pointerEvents: 'none'}}>
+      <svg width="100%" height="100%">
+        {corner(m, m, 1, 1)}
+        {corner(width - m, m, -1, 1)}
+        {corner(m, height - m, 1, -1)}
+        {corner(width - m, height - m, -1, -1)}
+      </svg>
+      {/* REC dot + timecode */}
+      <div style={{position: 'absolute', top: m + 22, left: m + 34, display: 'flex', alignItems: 'center', gap: 14}}>
+        <div style={{width: 26, height: 26, borderRadius: '50%', background: blink ? '#FF3B30' : 'transparent',
+          boxShadow: blink ? '0 0 18px rgba(255,59,48,0.9)' : 'none'}} />
+        <span style={{fontFamily: 'monospace', fontWeight: 700, fontSize: 38, color: '#fff',
+          textShadow: '0 2px 6px rgba(0,0,0,0.8)'}}>REC</span>
+      </div>
+      <div style={{position: 'absolute', top: m + 26, right: m + 34, fontFamily: 'monospace',
+        fontSize: 34, color: '#fff', textShadow: '0 2px 6px rgba(0,0,0,0.8)'}}>{tc}</div>
+      {/* battery */}
+      <div style={{position: 'absolute', bottom: m + 30, right: m + 34, display: 'flex', alignItems: 'center', gap: 6}}>
+        <div style={{width: 62, height: 30, border: '4px solid #fff', borderRadius: 5, padding: 3}}>
+          <div style={{width: '62%', height: '100%', background: '#fff'}} />
+        </div>
+        <div style={{width: 7, height: 14, background: '#fff', borderRadius: 2}} />
+      </div>
+      {/* playback bar */}
+      <div style={{position: 'absolute', bottom: m + 34, left: m + 34, right: m + 150, height: 10,
+        background: 'rgba(255,255,255,0.35)', borderRadius: 5}}>
+        <div style={{width: `${Math.min(100, (frame / Math.max(1, fps * 3)) * 100)}%`, height: '100%',
+          background: '#fff', borderRadius: 5}} />
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 export type SceneBg = 'grid' | 'cardboard' | 'solid' | 'split' | 'broll';
 
 export const SceneBackground: React.FC<{

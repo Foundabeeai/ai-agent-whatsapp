@@ -84,6 +84,7 @@ def render_layer(
                     "icon": str((s.get("info") or {}).get("icon", "")),
                 } if isinstance(s.get("info"), dict) else {"type": "none"},
                 "transition": str(s.get("transition", "flash")),
+                "recUi": bool(s.get("recUi", False)),
                 "zoom": str(s.get("zoom", "none")),
                 "lens": bool(s.get("lens", False)),
                 "emphasis": bool(s.get("emphasis", False)),

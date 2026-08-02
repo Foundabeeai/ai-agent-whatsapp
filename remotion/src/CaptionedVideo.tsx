@@ -1,7 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, Audio, OffthreadVideo, Sequence, staticFile, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
 import {z} from 'zod';
-import {SceneBackground} from './backgrounds';
+import {SceneBackground, RecUIFrame} from './backgrounds';
 import {BigTextBehind, LensVignette, WordCaptions} from './graphics';
 import {Doodle} from './doodles';
 import {FilmGrain, CutFlash, WhipSwipe, GlitchBurst, useShake} from './effects';
@@ -29,6 +29,7 @@ const sceneSchema = z.object({
     icon: z.string().optional().default(''),
   }).optional(),
   transition: z.enum(TRANSITIONS).optional().default('flash'),
+  recUi: z.boolean().optional().default(false),
   zoom: z.string().optional().default('none'),
   lens: z.boolean().optional().default(false),
   emphasis: z.boolean().optional().default(false),
@@ -133,12 +134,13 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({scenes, words, ca
         scenes.map((s, i) => {
           const from = Math.max(0, Math.round(s.start * fps));
           const dur = Math.max(1, Math.round((s.end - s.start) * fps));
-          if (s.doodle === 'none' && !s.lens) return null;
+          if (s.doodle === 'none' && !s.lens && !s.recUi) return null;
           return (
             <Sequence key={`fx${i}`} from={from} durationInFrames={dur}>
               <AbsoluteFill>
                 {s.lens ? <LensVignette /> : null}
                 {s.doodle !== 'none' ? <Doodle kind={s.doodle} captionPos={captionPos} /> : null}
+                {s.recUi ? <RecUIFrame /> : null}
               </AbsoluteFill>
             </Sequence>
           );
