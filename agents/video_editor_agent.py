@@ -352,35 +352,41 @@ _ARCH_ROTATION = ("bg_swap", "grid", "broll", "split", "cardboard", "rec_ui")
 
 
 def _apply_archetype(scene: dict, arch: str, i: int, broll_url: str, solid_i: int) -> int:
-    """Map an archetype onto a scene dict (mutates it). Returns the next solid_i."""
+    """
+    Map an archetype onto a scene (mutates it). Returns the next solid_i.
+
+    KEY RULE (omniflash grammar): the AI-generated background PLATE is the scene
+    whenever we have one — the archetype governs the TREATMENT layered on top
+    (giant type, doodles, retro UI frame), not whether there's a real background.
+    Flat designed walls are used only as deliberate accent beats for contrast.
+    """
     scene["recUi"] = False
-    if arch == "broll" and broll_url:
+    has_plate = bool(broll_url)
+
+    if arch == "rec_ui":
+        scene["recUi"] = True
+    if arch == "cardboard" and not has_plate:
+        scene["presenter"] = "sticker"
+
+    # Real generated footage backs the beat whenever it exists.
+    if has_plate and arch not in ("split", "cardboard"):
         scene["bg"] = "broll"
         scene["brollSrc"] = broll_url
         return solid_i
-    if arch == "rec_ui":
-        # retro UI frame over footage when we have it, else a solid wall
-        if broll_url:
-            scene["bg"] = "broll"; scene["brollSrc"] = broll_url
-        else:
-            scene["bg"] = "solid"; scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
-            solid_i += 1
-        scene["recUi"] = True
-        return solid_i
+
+    # Accent beats (or no plate available) → designed background.
     if arch == "grid":
         scene["bg"] = "grid"
-        return solid_i
-    if arch == "cardboard":
+    elif arch == "cardboard":
         scene["bg"] = "cardboard"
         scene["presenter"] = "sticker"
-        return solid_i
-    if arch == "split":
+    elif arch == "split":
         scene["bg"] = "split"; scene["color"] = "#EDE6D6"; scene["color2"] = "#E7B10A"
-        return solid_i
-    # bg_swap (default): flat bold colour wall for giant kinetic type
-    scene["bg"] = "solid"
-    scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
-    return solid_i + 1
+    else:  # bg_swap / broll-without-plate → flat bold colour wall for giant type
+        scene["bg"] = "solid"
+        scene["color"] = _SOLID_COLORS[solid_i % len(_SOLID_COLORS)]
+        return solid_i + 1
+    return solid_i
 
 
 def _fallback_words(segments: list[dict]) -> list[dict]:
@@ -567,6 +573,14 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
         else:
             _send(phone, {"kind": "text", "text": f"🎥 Creating {len(segments)} B-roll background scenes… ⏱ a few minutes"})
             broll_urls = _generate_stopmotion_broll(phone, segments)
+        # Never let a failed plate collapse a beat to a plain wall — reuse the
+        # nearest generated background so every beat has real footage behind it.
+        _valid = [u for u in broll_urls if u]
+        if _valid:
+            broll_urls = [u or _valid[i % len(_valid)] for i, u in enumerate(broll_urls)]
+        logger.info("video_editor: %d/%d beats have a real background plate",
+                    len([u for u in broll_urls if u]), len(segments))
+
         scenes = _plan_to_scenes(segments, duration, broll_urls)
 
         # 2) Remotion back plate: background videos + big-text (opaque h264)
