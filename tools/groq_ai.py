@@ -542,6 +542,35 @@ def web_research(query: str, max_tokens: int = 800) -> str:
         return ""
 
 
+def carousel_architecture(total_slides: int) -> list[str]:
+    """
+    Adaptive narrative architecture for an EXACT slide count (slide 1 = cover/hook).
+    Flexible storytelling guidance, not a fixed template — extra slides deepen the
+    story rather than pad it.
+    """
+    fixed = {
+        3: ["Strong hook", "Main insight or value", "Conclusion and CTA"],
+        4: ["Hook", "Problem or context", "Insight or solution", "Conclusion and CTA"],
+        5: ["Hook", "Problem", "Key insight", "Practical application", "Conclusion and CTA"],
+        6: ["Hook", "Context or problem", "Insight", "Evidence or example",
+            "Actionable framework", "Conclusion and CTA"],
+        7: ["Hook", "Problem or misconception", "Hidden insight", "Evidence",
+            "Framework or process", "Practical application", "Conclusion and CTA"],
+        8: ["Hook", "Problem", "Hidden insight", "Evidence or research", "Framework",
+            "Example", "Actionable takeaway", "Conclusion and CTA"],
+    }
+    if total_slides in fixed:
+        return fixed[total_slides]
+    if total_slides <= 2:
+        return ["Strong hook", "Core takeaway and CTA"][:max(1, total_slides)]
+    # 9+ — deepen the middle with distinct, non-filler beats
+    deepen = ["Evidence or research", "Detailed example", "Case study", "Step-by-step process",
+              "Comparison", "Framework", "Common mistake to avoid", "Practical application",
+              "Visual explanation", "Expert perspective", "Data point", "Myth vs reality"]
+    mid = [deepen[i % len(deepen)] for i in range(total_slides - 4)]
+    return ["Hook", "Problem or misconception", "Hidden insight"] + mid + ["Conclusion and CTA"]
+
+
 def generate_research_carousel_content(topic: str, brand: dict, slide_count: int = 3) -> dict:
     """
     Generate a punchy, hook-driven carousel script. Each slide carries ONE short
@@ -562,20 +591,32 @@ def generate_research_carousel_content(topic: str, brand: dict, slide_count: int
     import json as _json
     import re as _re
 
+    total_slides = slide_count + 1          # slide 1 is the cover/hook
+    arch = carousel_architecture(total_slides)
+    content_roles = arch[1:]                # roles for the content slides after the cover
+    roles_block = "\n".join(f"  Slide {i + 2}: {r}" for i, r in enumerate(content_roles))
+
     system = (
-        "You are a top-tier Instagram carousel strategist writing PROFESSIONAL, information-rich "
-        "carousels that read like an expert authored them — the kind that get saved and shared.\n\n"
-        "RULES:\n"
-        "- Each slide = a strong, specific HEADLINE (max ~8 words) + a BODY of ONE tight, informative "
-        "sentence (roughly 14-26 words) that delivers a REAL, concrete insight — a number, stat, price, "
-        "feature, or market fact. Not vague hype.\n"
+        "You are a top-tier Instagram/LinkedIn carousel strategist writing PROFESSIONAL, "
+        "information-rich carousels that read like an expert authored them — the kind people save "
+        "and share.\n\n"
+        "SLIDE COUNT IS A STRICT REQUIREMENT.\n"
+        f"- The carousel has EXACTLY {total_slides} slides: slide 1 is the cover hook, plus exactly "
+        f"{slide_count} content slides. Never add, drop, merge or split slides.\n\n"
+        "NARRATIVE ARCHITECTURE — give each content slide this exact role:\n"
+        f"  Slide 1 (cover): {arch[0]}\n{roles_block}\n\n"
+        "WRITING RULES (this is NOT a minimal carousel):\n"
+        "- Each slide = a strong, specific HEADLINE (max ~8 words) + a BODY of 1-2 tight, informative "
+        "sentences (roughly 20-38 words) that genuinely teach something.\n"
+        "- Every slide must introduce a NEW idea, advance the narrative, or make the information easier "
+        "to understand. No filler, no repetition, no restating an earlier slide.\n"
         "- USE THE PROVIDED FACTS AND RESEARCH: weave in specific figures (prices, %, sq ft, beds/baths, "
-        "median/market data, neighborhood or industry stats). Every body line should teach something real.\n"
+        "median/market data, industry stats). Every body should carry something concrete.\n"
         "- NEVER invent numbers. Only use figures present in the facts/research provided. If none fit a "
-        "slide, make the body a concrete qualitative benefit — still specific, never generic filler.\n"
-        "- The slides flow as one narrative: cover hook → build value slide by slide → final CTA.\n"
+        "slide, make the body a concrete qualitative insight — still specific, never generic hype.\n"
+        "- The final slide delivers a memorable conclusion, the core takeaway, and a natural CTA.\n"
         "- Professional, credible, confident tone. No hashtags, no emojis in slide text, no quotation marks.\n"
-        "- Output ONLY valid JSON. No markdown, no extra keys."
+        f"- Return EXACTLY {slide_count} objects in the slides array. Output ONLY valid JSON, no markdown."
     )
 
     brand_ctx = (
@@ -587,23 +628,52 @@ def generate_research_carousel_content(topic: str, brand: dict, slide_count: int
     user = (
         f"{brand_ctx}\n"
         f"Carousel topic + REAL facts/research to use (cite specific numbers from here):\n{topic}\n\n"
-        f"Number of slides (not counting the cover hook): {slide_count}\n\n"
-        "Write a professional, data-rich carousel. Return JSON exactly:\n"
+        f"TOTAL slides: {total_slides} (cover hook + {slide_count} content slides)\n"
+        f"Content slide roles, in order: {', '.join(content_roles)}\n\n"
+        f"Write a professional, data-rich carousel with EXACTLY {slide_count} content slides. "
+        "Return JSON exactly:\n"
         '{"hook": "strong specific cover line", '
-        '"slides": [{"headline": "specific headline", "subtext": "one informative sentence with a real fact"}, ...], '
+        '"slides": [{"headline": "specific headline", "subtext": "1-2 informative sentences with real facts"}, ...], '
         '"cta": "final call to action line"}'
     )
 
-    raw = _chat(system, user, temperature=0.6, max_tokens=1400)
+    # Rich slides (20-38 words each) + JSON overhead + reasoning tokens — budget
+    # generously or the response truncates mid-JSON and we lose the whole carousel.
+    raw = _chat(system, user, temperature=0.6, max_tokens=max(3000, 500 * total_slides))
     try:
         clean = _re.sub(r"```[a-z]*", "", raw).strip().strip("`")
         data = _json.loads(clean)
         if "hook" not in data or "slides" not in data:
             raise ValueError("Missing keys")
         cta = data.get("cta", "")
-        # Normalise slides → keep only short headline + subtext; attach swipe/cta hints
+        slides = [s for s in (data.get("slides") or []) if isinstance(s, dict)][:slide_count]
+
+        # ── EXACT-COUNT VALIDATION: the user's number is a hard requirement ──
+        if len(slides) < slide_count:
+            missing = slide_count - len(slides)
+            _logger.warning("carousel: LLM returned %d/%d slides — requesting the missing %d",
+                           len(slides), slide_count, missing)
+            try:
+                roles_needed = content_roles[len(slides):]
+                fix_user = (
+                    f"{brand_ctx}\nTopic/facts:\n{topic}\n\n"
+                    f"Write EXACTLY {missing} MORE carousel slides continuing this narrative. "
+                    f"Their roles, in order: {', '.join(roles_needed)}.\n"
+                    f"Already written: {_json.dumps([s.get('headline') for s in slides])}\n"
+                    "Do not repeat those. Return ONLY JSON: "
+                    '{"slides":[{"headline":"...","subtext":"..."}]}'
+                )
+                more = _chat(system, fix_user, temperature=0.6, max_tokens=260 * missing + 400)
+                more = _json.loads(_re.sub(r"```[a-z]*", "", more).strip().strip("`"))
+                slides += [s for s in (more.get("slides") or []) if isinstance(s, dict)][:missing]
+            except Exception as exc:
+                _logger.warning("carousel: top-up call failed: %s", exc)
+        # Last-resort pad so the deliverable ALWAYS matches the requested count
+        while len(slides) < slide_count:
+            role = content_roles[min(len(slides), len(content_roles) - 1)]
+            slides.append({"headline": role, "subtext": ""})
+
         norm_slides = []
-        slides = data.get("slides", [])[:slide_count]
         for i, s in enumerate(slides):
             is_last = (i == len(slides) - 1)
             norm_slides.append({
@@ -612,13 +682,16 @@ def generate_research_carousel_content(topic: str, brand: dict, slide_count: int
                 "swipe":    None if is_last else "SWIPE →",
                 "cta":      (cta or "Tap the link in bio") if is_last else None,
             })
+        _logger.info("carousel: requested %d slides, generated %d (cover + %d content)",
+                    total_slides, 1 + len(norm_slides), len(norm_slides))
         return {"hook": str(data.get("hook") or "").strip(), "slides": norm_slides}
     except Exception:
+        _logger.warning("carousel: content generation failed — architecture fallback (%d slides)", slide_count)
         return {
             "hook": f"{topic[:48]}",
             "slides": [
                 {
-                    "headline": f"Reason {i+1} to look closer.",
+                    "headline": content_roles[i] if i < len(content_roles) else f"Key point {i+1}",
                     "body": "",
                     "swipe": "SWIPE →" if i < slide_count - 1 else None,
                     "cta": "Tap the link in bio" if i == slide_count - 1 else None,
