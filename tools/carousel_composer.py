@@ -20,12 +20,15 @@ Text colors: auto-complement background luminance
 
 from __future__ import annotations
 
+import logging
 import os
 from io import BytesIO
 from typing import Optional
 
 import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────
 # Canvas dimensions (defaults — overridden by style compositor)
@@ -481,6 +484,25 @@ def _stamp_contact_footer(img: Image.Image, text: str) -> Image.Image:
     tw = d.textlength(text, font=fnt)
     d.text(((W - tw) / 2, H - bar_h + (bar_h - size) / 2 - 2), text, font=fnt, fill=(255, 255, 255, 240))
     return im.convert("RGB")
+
+
+def stamp_contact_bar(image_bytes: bytes, text: str) -> bytes:
+    """
+    Stamp ONLY the contact bar (name • mobile • email) onto a finished slide.
+    Used for gpt-image-2 generated carousels, where all other typography is
+    rendered inside the image itself. Returns JPEG bytes (original on failure).
+    """
+    if not text:
+        return image_bytes
+    try:
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        out = _stamp_contact_footer(img, text)
+        buf = BytesIO()
+        out.save(buf, "JPEG", quality=92, optimize=True)
+        return buf.getvalue()
+    except Exception as exc:
+        logger.warning("stamp_contact_bar failed: %s", exc)
+        return image_bytes
 
 
 def _cover_slide(hook_text: str, category: str, total: int, scheme: dict,

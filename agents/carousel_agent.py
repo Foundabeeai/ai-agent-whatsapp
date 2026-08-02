@@ -31,8 +31,8 @@ from session_store import (
     STEP_AGENT_CAROUSEL,
     STEP_CHOOSE_CONTENT_TYPE,
 )
-from tools import groq_ai, aws_storage, image_gen
-from tools.carousel_composer import make_research_carousel
+from tools import groq_ai, aws_storage, image_gen, carousel_slides
+from tools.carousel_composer import make_research_carousel, stamp_contact_bar
 
 logger = logging.getLogger(__name__)
 
@@ -353,95 +353,57 @@ def _generate_bg(phone: str, session: UserSession, intent: dict) -> None:
         )
         brand_hex = groq_ai.get_brand_hex_colors(session.brand_colors or "")
 
-        # Step 2: A background image for EVERY slide — scraped real photos first
-        # (as many as available), then generated branded backgrounds to fill the
-        # rest so no slide is left with a plain background.
+        # ── Step 2: render EVERY slide with gpt-image-2 (text baked into the
+        #    image). Nothing is drawn on top afterwards except the contact bar. ──
         total_slides = 1 + slide_count
-        import requests as _req
-        from concurrent.futures import ThreadPoolExecutor
+        _send(phone, {"kind": "text",
+                      "text": f"🎨 Designing {total_slides} slides with AI (text rendered into each)… ⏱ a couple of minutes"})
 
-        def _fetch(u: str) -> Optional[bytes]:
-            try:
-                r = _req.get(u, timeout=30)
-                return r.content if r.ok else None
-            except Exception:
-                return None
+        roles = groq_ai.carousel_architecture(total_slides)
+        slide_specs = [{
+            "headline": carousel_content.get("hook", ""),
+            "body": "",
+            "role": roles[0] if roles else "Hook",
+        }]
+        for i, s in enumerate(carousel_content.get("slides") or []):
+            slide_specs.append({
+                "headline": s.get("headline", ""),
+                "body": s.get("body", ""),
+                "role": roles[i + 1] if i + 1 < len(roles) else "Key point",
+            })
 
-        # one bg slot per slide (index 0 = cover)
-        bgs: list[Optional[bytes]] = [None] * total_slides
+        # Real photos (scraped listing/product shots) anchor their slide's subject
+        photo_refs = list(scraped_imgs[:total_slides]) + [""] * max(0, total_slides - len(scraped_imgs))
 
-        # 1) Fill slots with the user's REAL scraped photos (never regenerated)
-        real_used = 0
-        if scraped_imgs:
-            _send(phone, {"kind": "text", "text": "🏡 Using your real photos for the slides..."})
-            with ThreadPoolExecutor(max_workers=4) as ex:
-                fetched = list(ex.map(_fetch, scraped_imgs[:total_slides]))
-            for b in fetched:
-                if b and real_used < total_slides:
-                    bgs[real_used] = b
-                    real_used += 1
+        palette = session.brand_colors or ""
+        if not palette and brand_hex:
+            palette = ", ".join(v for v in brand_hex.values() if isinstance(v, str) and v.startswith("#"))
 
-        # 2) Generate a relevant branded background for each remaining slot
-        missing = [i for i in range(total_slides) if bgs[i] is None]
-        if missing:
-            _send(phone, {"kind": "text", "text": f"🎨 Generating {len(missing)} background image(s)..."})
-            ref_images = [session.brand_assets[0]] if session.brand_assets else None
-            slide_texts = [carousel_content.get("hook", "")] + [
-                (s.get("title") or s.get("headline") or s.get("text") or "")
-                for s in (carousel_content.get("slides") or [])
-            ]
+        rendered = carousel_slides.generate_slides(
+            slide_specs, brand=brand, palette=palette or "professional editorial palette",
+            photo_refs=photo_refs,
+        )
+        if not any(rendered):
+            raise RuntimeError("slide generation failed")
 
-            def _gen_bg(i: int) -> tuple[int, Optional[bytes]]:
-                txt = slide_texts[i] if i < len(slide_texts) else description
-                bg_prompt = (
-                    f"Cinematic editorial photo for {brand.get('brand_name','the brand')}: "
-                    f"{(txt or description)[:180]}. Brand colors: "
-                    f"{session.brand_colors or 'professional dark tones'}. "
-                    "No text, no logos, dramatic commercial lighting, magazine quality."
-                )
-                ref = [ref_images[i % len(ref_images)]] if ref_images else None
-                gen = image_gen.generate_image(bg_prompt, aspect_ratio="1:1", reference_urls=ref)
-                return (i, _fetch(gen["url"]) if gen.get("ok") and gen.get("url") else None)
-
-            with ThreadPoolExecutor(max_workers=3) as ex:
-                for i, b in ex.map(_gen_bg, missing):
-                    if b:
-                        bgs[i] = b
-
-        # 3) Fallback: any slot still empty reuses the previous available image
-        last: Optional[bytes] = None
-        for i in range(total_slides):
-            if bgs[i] is None:
-                bgs[i] = last
-            else:
-                last = bgs[i]
-
-        hook_bytes: Optional[bytes] = bgs[0]
-        extra_bg: list[bytes] = [b for b in bgs[1:] if b is not None]
-
-        if not hook_bytes:
-            raise RuntimeError("Background image generation failed")
-
-        # Contact footer on every slide (name • mobile • email) from the saved card
+        # Contact bar (the ONLY thing stamped on top) — name • mobile • email
         _footer = ""
         if _card:
             _fp = [_card.get("name"), _card.get("mobile"), _card.get("email")]
             _footer = "   •   ".join(p for p in _fp if p)
+        if not _footer and session.brand_name:
+            _footer = session.brand_name
 
-        # Step 3: Compose carousel slides with Pillow
-        _send(phone, {"kind": "text", "text": f"🖼 Rendering {total_slides} slides..."})
-        slide_images = make_research_carousel(
-            carousel_content=carousel_content,
-            hook_image_bytes=hook_bytes,
-            extra_bg_bytes=extra_bg,
-            brand_colors=brand_hex,
-            username=session.instagram_username or session.brand_name or "brand",
-            brand_name=session.brand_name or "",
-            avatar_url=session.brand_assets[0] if session.brand_assets else None,
-            style_compositor=compositor,
-            add_badge=intent.get("_add_badge", False),
-            contact_footer=_footer,
-        )
+        slide_images = []
+        for i, img in enumerate(rendered):
+            if not img:
+                continue
+            slide_images.append(stamp_contact_bar(img, _footer) if _footer else img)
+
+        if not slide_images:
+            raise RuntimeError("no slides rendered")
+        _send(phone, {"kind": "text", "text": f"🖼 {len(slide_images)} slides ready — uploading…"})
+
 
         # Upload slides
         s3_urls = []
