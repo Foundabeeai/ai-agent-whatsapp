@@ -167,14 +167,16 @@ def handle_step(
 
     if sub_step == "awaiting_plan_ok":
         if low in ("approve", "yes", "ok", "okay", "go", "looks good", "perfect", "make it", "continue"):
-            intent["_sub_step"] = "building"
+            intent["_sub_step"] = "awaiting_mode"
             session.agent_intent = intent
             save_session(session)
-            _send(phone, {"kind": "text",
-                          "text": "🎬 Building your edit! Generating B-roll for each scene and compositing "
-                                  "you over it with zoom cuts.\n⏱ This takes a few minutes — I'll send it when it's ready ☕"})
-            threading.Thread(target=_build_bg, args=(phone, session, intent), daemon=True).start()
-            return {"kind": "none"}
+            return {"kind": "text", "text": (
+                "🎛 *How should I build it?*\n\n"
+                "*1* ⚡ *Composite* (default) — you keyed over AI backgrounds with kinetic "
+                "captions & graphics. Fast, cheap, your face is always perfectly preserved.\n\n"
+                "*2* 🎬 *Cinematic restyle* — Runway Aleph repaints your ACTUAL footage "
+                "scene-by-scene (premium film look). Slower and costs more per video.\n\n"
+                "Reply *1* or *2*.")}
         if "regenerate" in low or "again" in low or "redo" in low:
             intent["_sub_step"] = "planning"
             session.agent_intent = intent
@@ -182,6 +184,23 @@ def handle_step(
             threading.Thread(target=_plan_bg, args=(phone, session, intent), daemon=True).start()
             return {"kind": "none"}
         return {"kind": "text", "text": "Reply *approve* to build the video, or *regenerate* to re-plan."}
+
+    if sub_step == "awaiting_mode":
+        wants_aleph = low in ("2", "two", "aleph", "cinematic", "restyle", "cinematic restyle", "premium")
+        intent["_sub_step"] = "building"
+        session.agent_intent = intent
+        save_session(session)
+        if wants_aleph:
+            _send(phone, {"kind": "text",
+                          "text": "🎬 Cinematic restyle — Aleph is repainting your footage scene by scene.\n"
+                                  "⏱ This takes several minutes ☕"})
+            threading.Thread(target=_aleph_bg, args=(phone, session, intent), daemon=True).start()
+        else:
+            _send(phone, {"kind": "text",
+                          "text": "⚡ Building your edit! Generating backgrounds and compositing you over "
+                                  "them with kinetic captions.\n⏱ A few minutes — I'll send it when ready ☕"})
+            threading.Thread(target=_build_bg, args=(phone, session, intent), daemon=True).start()
+        return {"kind": "none"}
 
     if sub_step == "awaiting_publish":
         if "regenerate" in low or "again" in low or "redo" in low or "rebuild" in low:
@@ -526,6 +545,96 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
 
         scenes.append(scene)
     return scenes
+
+
+def _aleph_bg(phone: str, session: UserSession, intent: dict) -> None:
+    """
+    CINEMATIC RESTYLE (arcads-omniflash grammar, powered by Runway Gen-4 Aleph):
+    repaint the user's ACTUAL footage scene-by-scene instead of compositing them
+    over generated plates. Chunks to the model's 5s limit on beat boundaries,
+    restyles each, concatenates and relays the original voice.
+    """
+    try:
+        from tools import aleph_edit
+        _reap_tmp()
+        plan     = intent.get("_edit_plan", {}) or {}
+        segments = plan.get("segments", []) or []
+        src_url  = intent.get("_src_video_url", "")
+        duration = float(intent.get("_duration") or 15.0)
+        if not src_url or not segments:
+            raise RuntimeError("missing source video or edit plan")
+
+        # Map the beat plan onto Aleph's scene-prompt shape
+        _CAM = {"in": "hard punch-in on the stressed word",
+                "punch": "hard punch-in to 125%",
+                "out": "snap zoom back out to full frame",
+                "none": "hold the framing"}
+        _SCENE = {
+            "bg_swap":  "replace the background with a flat bold poster-colour wall",
+            "grid":     "replace the background with a teal cutting-mat grid with hand-drawn white doodles",
+            "cardboard":"replace the background with a kraft cardboard texture",
+            "split":    "replace the background with a two-tone colour-block split",
+            "rec_ui":   "overlay a retro camcorder UI frame (REC dot, timecode, battery, playback bar)",
+            "broll":    "replace the background with cinematic footage matching the topic",
+        }
+        beats = []
+        for i, seg in enumerate(segments):
+            arch = str(seg.get("archetype", "")).lower().strip()
+            if arch not in _SCENE:
+                arch = _ARCH_ROTATION[i % len(_ARCH_ROTATION)]
+            scene = _SCENE.get(arch, _SCENE["bg_swap"])
+            bp = (seg.get("broll_prompt") or "").strip()
+            if arch == "broll" and bp:
+                scene = f"replace the background with cinematic footage: {bp}"
+            beats.append({
+                "start": float(seg.get("start", 0)),
+                "end":   float(seg.get("end", 0)),
+                "scene": scene,
+                "text":  str(seg.get("big_text") or seg.get("caption") or "").strip().upper()[:40],
+                "camera": _CAM.get(str(seg.get("zoom", "none")).lower(), ""),
+            })
+
+        def _progress(n, total):
+            _send(phone, {"kind": "text", "text": f"🎞 Restyling scene {n}/{total}…"})
+
+        out = aleph_edit.restyle_video(
+            source_url=src_url, beats=beats,
+            style_notes="bold editorial social-media edit, high contrast, premium film grade",
+            aspect_ratio="9:16", progress=_progress,
+        )
+        if not out.get("ok") or not out.get("bytes"):
+            raise RuntimeError(out.get("error") or "aleph returned nothing")
+
+        final_bytes = out["bytes"]
+        logger.info("video_editor: aleph reel %.1f MB (%d chunks)",
+                    len(final_bytes) / 1e6, out.get("chunks", 0))
+        if len(final_bytes) > 15 * 1024 * 1024:
+            _send(phone, {"kind": "text", "text": "📦 Compressing for WhatsApp…"})
+            final_bytes = video_gen.compress_for_whatsapp(final_bytes) or final_bytes
+
+        up = aws_storage.upload_bytes(final_bytes, content_type="video/mp4",
+                                      extension="mp4", folder=f"{phone}/video_editor")
+        final_url = up.get("s3_url") or up.get("permanent_url")
+        if not final_url:
+            raise RuntimeError(f"S3 upload failed: {up.get('error')}")
+        intent["_final_video_url"] = final_url
+        intent["_sub_step"] = "awaiting_publish"
+        session.agent_intent = intent
+        save_session(session)
+
+        _send(phone, {"kind": "media", "media_url": final_url,
+                      "text": "🎬 Your cinematic restyle is ready — your real footage, repainted scene by scene!"})
+        _send(phone, {"kind": "text",
+                      "text": f"🔗 Direct link: {final_url}\n\nReply:\n✅ *post now* — publish\n"
+                              "🔄 *regenerate* — rebuild\n⏭ *skip* — save as draft"})
+    except Exception as exc:
+        logger.exception("video_editor _aleph_bg failed: %s", exc)
+        intent["_sub_step"] = "awaiting_mode"
+        session.agent_intent = intent
+        save_session(session)
+        _send(phone, {"kind": "text",
+                      "text": f"😕 Cinematic restyle failed: {exc}\n\nReply *1* to build it the fast "
+                              "composite way instead, or *2* to retry the restyle."})
 
 
 def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
