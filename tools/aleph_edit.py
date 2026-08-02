@@ -202,8 +202,19 @@ def restyle_video(source_url: str, beats: list[dict], style_notes: str = "",
             prompt = build_scene_prompt(local or [{"start": 0, "end": b - a,
                                                    "scene": style_notes or "restyle the background"}],
                                         style_notes)
+            # Runway requires an approved Content-Type on the asset URL — a raw
+            # file upload is served as application/octet-stream and is REJECTED.
+            # Upload to S3 with an explicit video/mp4 type and pass that URL.
+            from tools import aws_storage as _s3
             with open(piece, "rb") as fh:
-                res = restyle_clip(fh, prompt, reference_image, aspect_ratio)
+                _up = _s3.upload_bytes(fh.read(), content_type="video/mp4",
+                                       extension="mp4", folder="aleph_chunks")
+            chunk_url = _up.get("s3_url")
+            if not chunk_url:
+                logger.warning("aleph chunk %d upload failed: %s", i, _up.get("error"))
+                styled.append(piece)
+                continue
+            res = restyle_clip(chunk_url, prompt, reference_image, aspect_ratio)
             if not res.get("ok") or not res.get("bytes"):
                 logger.warning("aleph chunk %d failed: %s — using original", i, res.get("error"))
                 styled.append(piece)

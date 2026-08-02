@@ -930,6 +930,81 @@ def finalize_audio(video_bytes: bytes, voice_url: str) -> bytes | None:
         return None
 
 
+def composite_beats(back_bytes: bytes, greenscreen_url: str, beats: list[dict]) -> dict:
+    """
+    Per-beat compositing — this is what makes the edit READ as edited.
+
+    The presenter is keyed and placed as a CUT-OUT sized per beat (60-85% of frame
+    height, anchored bottom/centre) so the generated background and the giant
+    kinetic type behind them are actually visible. Each beat is composited with its
+    own scale/anchor, then all beats are concatenated, so the framing changes on
+    every cut instead of one static full-frame overlay for the whole video.
+
+    beats: [{"start": s, "end": s, "scale": 0.0-1.0, "anchor": "bottom"|"center"}]
+    Returns {"ok": True, "bytes": mp4}.
+    """
+    try:
+        with _video_slot("editor"):
+            import tempfile, os as _os, subprocess, requests as _req, shutil
+            tmp = tempfile.mkdtemp()
+            back = _os.path.join(tmp, "back.mp4")
+            gs = _os.path.join(tmp, "gs.mp4")
+            with open(back, "wb") as f:
+                f.write(back_bytes)
+            with open(gs, "wb") as f:
+                f.write(_req.get(greenscreen_url, timeout=300).content)
+
+            W, H = 1080, 1920
+            pieces: list[str] = []
+            for i, b in enumerate(beats):
+                s = max(0.0, float(b.get("start", 0)))
+                e = float(b.get("end", 0))
+                dur = max(0.3, e - s)
+                scale = float(b.get("scale", 0.75))
+                scale = min(1.0, max(0.45, scale))
+                ph = int(H * scale)                       # presenter height in px
+                anchor = str(b.get("anchor", "bottom"))
+                y = "H-h" if anchor == "bottom" else "(H-h)/2"
+
+                out = _os.path.join(tmp, f"beat{i}.mp4")
+                fc = (
+                    f"[1:v]chromakey=0x00B140:0.16:0.06,"
+                    f"scale=-2:{ph}[ck];"
+                    f"[0:v][ck]overlay=x=(W-w)/2:y={y}:shortest=1[v]"
+                )
+                cmd = ["ffmpeg", "-y",
+                       "-ss", f"{s}", "-t", f"{dur}", "-i", back,
+                       "-ss", f"{s}", "-t", f"{dur}", "-i", gs,
+                       "-filter_complex", fc, "-map", "[v]",
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                       "-pix_fmt", "yuv420p", "-r", "24", "-an", out]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if proc.returncode == 0 and _os.path.exists(out):
+                    pieces.append(out)
+                else:
+                    logger.warning("composite_beats: beat %d failed: %s", i, (proc.stderr or "")[-200:])
+
+            if not pieces:
+                return {"ok": False, "error": "no beats composited"}
+
+            lst = _os.path.join(tmp, "list.txt")
+            with open(lst, "w") as f:
+                for p in pieces:
+                    f.write(f"file '{p}'\n")
+            final = _os.path.join(tmp, "out.mp4")
+            proc = subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst,
+                                   "-c", "copy", final], capture_output=True, text=True, timeout=600)
+            if proc.returncode != 0 or not _os.path.exists(final):
+                return {"ok": False, "error": (proc.stderr or "")[-300:]}
+            with open(final, "rb") as f:
+                data = f.read()
+            shutil.rmtree(tmp, ignore_errors=True)
+            return {"ok": True, "bytes": data}
+    except Exception as exc:
+        logger.error("composite_beats failed: %s", exc, exc_info=True)
+        return {"ok": False, "error": str(exc)}
+
+
 def key_presenter_over(back_bytes: bytes, greenscreen_url: str, audio_url: str = "") -> dict:
     """
     Chroma-key the green-screen presenter and overlay it (cover-fit) onto the

@@ -128,8 +128,10 @@ export const BigTextBehind: React.FC<{text: string; color?: string; shadow?: str
   const {fps} = useVideoConfig();
   const pop = spring({frame, fps, config: {damping: 12, stiffness: 180, mass: 0.7}, durationInFrames: 12});
   const scale = interpolate(pop, [0, 1], [1.25, 1]);
+  // Sit in the UPPER half: the presenter cut-out occupies the lower ~70% of the
+  // frame, so centring the type would bury it behind them.
   return (
-    <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center'}}>
+    <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center', paddingTop: '12%'}}>
       <div
         style={{
           transform: `scale(${scale}) rotate(-3deg)`,

@@ -536,6 +536,18 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
 
         solid_i = _apply_archetype(scene, arch, i, broll, solid_i)
 
+        # ── Presenter framing per beat: the person is a CUT-OUT, not a full-frame
+        #    cover, so the background + giant type are actually visible. Sizes vary
+        #    per archetype and alternate slightly for the reference's reframing feel.
+        _base = {"bg_swap": 0.66, "split": 0.70, "cardboard": 0.60,
+                 "grid": 0.78, "rec_ui": 0.86, "broll": 0.80}.get(arch, 0.74)
+        if peak:
+            _base = min(0.92, _base + 0.10)       # punch in on the payoff beat
+        elif i % 3 == 2:
+            _base = max(0.55, _base - 0.06)       # pull back for variety
+        scene["presenterScale"] = round(_base, 2)
+        scene["presenterAnchor"] = "bottom"
+
         # Giant kinetic type IS the look on flat-colour beats — guarantee it
         if scene.get("bg") in ("solid", "split") and not scene.get("bigText"):
             scene["bigText"] = big_fallback
@@ -698,9 +710,18 @@ def _build_bg(phone: str, session: UserSession, intent: dict) -> None:
         if not back.get("ok") or not back.get("bytes"):
             raise RuntimeError(f"back-layer render failed: {back.get('error')}")
 
-        # 3) ffmpeg: chroma-key the presenter over the back plate → opaque mid.mp4
-        _send(phone, {"kind": "text", "text": "🟢 Cutting you out over the background…"})
-        mid = video_gen.key_presenter_over(back["bytes"], gs_url, src_url)
+        # 3) PER-BEAT composite: the presenter is a cut-out sized per beat, so the
+        #    background and giant type stay visible and the framing changes on every
+        #    cut (this is what makes it read as an edit, not the raw video).
+        _send(phone, {"kind": "text", "text": "🟢 Cutting you out over the backgrounds…"})
+        _beats = [{"start": s["start"], "end": s["end"],
+                   "scale": s.get("presenterScale", 0.74),
+                   "anchor": s.get("presenterAnchor", "bottom")} for s in scenes]
+        mid = video_gen.composite_beats(back["bytes"], gs_url, _beats)
+        if not mid.get("ok") or not mid.get("bytes"):
+            logger.warning("composite_beats failed (%s) — falling back to single-pass",
+                           mid.get("error"))
+            mid = video_gen.key_presenter_over(back["bytes"], gs_url, src_url)
         if not mid.get("ok") or not mid.get("bytes"):
             raise RuntimeError(f"presenter composite failed: {mid.get('error')}")
         mu = aws_storage.upload_bytes(mid["bytes"], content_type="video/mp4",
