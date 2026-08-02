@@ -174,7 +174,7 @@ def handle_step(
                 "🎛 *How should I build it?*\n\n"
                 "*1* ⚡ *Composite* (default) — you keyed over AI backgrounds with kinetic "
                 "captions & graphics. Fast, cheap, your face is always perfectly preserved.\n\n"
-                "*2* 🎬 *Cinematic restyle* — Runway Aleph repaints your ACTUAL footage "
+                "*2* 🎬 *Cinematic restyle* — Kling v3 Omni repaints your ACTUAL footage "
                 "scene-by-scene (premium film look). Slower and costs more per video.\n\n"
                 "Reply *1* or *2*.")}
         if "regenerate" in low or "again" in low or "redo" in low:
@@ -186,15 +186,15 @@ def handle_step(
         return {"kind": "text", "text": "Reply *approve* to build the video, or *regenerate* to re-plan."}
 
     if sub_step == "awaiting_mode":
-        wants_aleph = low in ("2", "two", "aleph", "cinematic", "restyle", "cinematic restyle", "premium")
+        wants_restyle = low in ("2", "two", "aleph", "cinematic", "restyle", "cinematic restyle", "premium")
         intent["_sub_step"] = "building"
         session.agent_intent = intent
         save_session(session)
-        if wants_aleph:
+        if wants_restyle:
             _send(phone, {"kind": "text",
-                          "text": "🎬 Cinematic restyle — Aleph is repainting your footage scene by scene.\n"
+                          "text": "🎬 Cinematic restyle — repainting your footage scene by scene.\n"
                                   "⏱ This takes several minutes ☕"})
-            threading.Thread(target=_aleph_bg, args=(phone, session, intent), daemon=True).start()
+            threading.Thread(target=_restyle_bg, args=(phone, session, intent), daemon=True).start()
         else:
             _send(phone, {"kind": "text",
                           "text": "⚡ Building your edit! Generating backgrounds and compositing you over "
@@ -559,15 +559,15 @@ def _plan_to_scenes(segments: list[dict], duration: float, broll_urls: list[str]
     return scenes
 
 
-def _aleph_bg(phone: str, session: UserSession, intent: dict) -> None:
+def _restyle_bg(phone: str, session: UserSession, intent: dict) -> None:
     """
-    CINEMATIC RESTYLE (arcads-omniflash grammar, powered by Runway Gen-4 Aleph):
+    CINEMATIC RESTYLE (arcads-omniflash grammar, powered by Kling v3 Omni):
     repaint the user's ACTUAL footage scene-by-scene instead of compositing them
     over generated plates. Chunks to the model's 5s limit on beat boundaries,
     restyles each, concatenates and relays the original voice.
     """
     try:
-        from tools import aleph_edit
+        from tools import omni_restyle
         _reap_tmp()
         plan     = intent.get("_edit_plan", {}) or {}
         segments = plan.get("segments", []) or []
@@ -609,16 +609,16 @@ def _aleph_bg(phone: str, session: UserSession, intent: dict) -> None:
         def _progress(n, total):
             _send(phone, {"kind": "text", "text": f"🎞 Restyling scene {n}/{total}…"})
 
-        out = aleph_edit.restyle_video(
+        out = omni_restyle.restyle_video(
             source_url=src_url, beats=beats,
             style_notes="bold editorial social-media edit, high contrast, premium film grade",
             aspect_ratio="9:16", progress=_progress,
         )
         if not out.get("ok") or not out.get("bytes"):
-            raise RuntimeError(out.get("error") or "aleph returned nothing")
+            raise RuntimeError(out.get("error") or "restyle returned nothing")
 
         final_bytes = out["bytes"]
-        logger.info("video_editor: aleph reel %.1f MB (%d chunks)",
+        logger.info("video_editor: omni reel %.1f MB (%d chunks)",
                     len(final_bytes) / 1e6, out.get("chunks", 0))
         if len(final_bytes) > 15 * 1024 * 1024:
             _send(phone, {"kind": "text", "text": "📦 Compressing for WhatsApp…"})
@@ -640,7 +640,7 @@ def _aleph_bg(phone: str, session: UserSession, intent: dict) -> None:
                       "text": f"🔗 Direct link: {final_url}\n\nReply:\n✅ *post now* — publish\n"
                               "🔄 *regenerate* — rebuild\n⏭ *skip* — save as draft"})
     except Exception as exc:
-        logger.exception("video_editor _aleph_bg failed: %s", exc)
+        logger.exception("video_editor _restyle_bg failed: %s", exc)
         intent["_sub_step"] = "awaiting_mode"
         session.agent_intent = intent
         save_session(session)
